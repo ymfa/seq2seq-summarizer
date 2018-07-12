@@ -68,24 +68,9 @@ def readLangs(lang1, lang2, reverse=False):
 
 MAX_LENGTH = 10
 
-eng_prefixes = (
-  "i am ", "i m ",
-  "he is ", "he s ",
-  "she is ", "she s ",
-  "you are ", "you re ",
-  "we are ", "we re ",
-  "they are ", "they re "
-)
-
-
-def filterPair(p):
-  return len(p[0].split(' ')) < MAX_LENGTH and \
-    len(p[1].split(' ')) < MAX_LENGTH and \
-    p[1].startswith(eng_prefixes)
-
 
 def filterPairs(pairs):
-    return [pair for pair in pairs if filterPair(pair)]
+  return pairs[:500]  # for now, use the first 500 examples
 
 
 def prepareData(lang1, lang2, reverse=False):

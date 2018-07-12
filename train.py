@@ -108,3 +108,4 @@ if __name__ == "__main__":
   decoder = AttnDecoderRNN(hidden_size, len(english.index2word)).to(DEVICE)
 
   trainIters(french, english, pairs, encoder, decoder, 5000)
+  torch.save((encoder.state_dict(), decoder.state_dict()), 'checkpoints/debug.pt')
