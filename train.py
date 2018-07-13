@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch import optim
 import time, random
 from utils import EOS, SOS, timeSince, showPlot, prepareData
-from model import DEVICE, EncoderRNN, AttnDecoderRNN
+from model import DEVICE, Seq2Seq
 
 
 def indexesFromSentence(lang, sentence):
@@ -23,58 +23,25 @@ def tensorsFromPair(input_lang, output_lang, pair):
   return (input_tensor, target_tensor)
 
 
-teacher_forcing_ratio = 0.5
+def train(input_tensor, target_tensor, model, optimizer, criterion):
+  optimizer.zero_grad()
 
-
-def train(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, decoder_optimizer, criterion, max_length):
-  encoder_hidden = encoder.initHidden()
-
-  encoder_optimizer.zero_grad()
-  decoder_optimizer.zero_grad()
-
-  input_length = input_tensor.size(0)
-  target_length = target_tensor.size(0)
-
-  encoder_outputs = torch.zeros(max_length, encoder.hidden_size, device=DEVICE)
-  loss = 0
-  for ei in range(input_length):
-    encoder_output, encoder_hidden = encoder(input_tensor[ei], encoder_hidden)
-    encoder_outputs[ei] = encoder_output[0, 0]
-
-  decoder_input = torch.tensor([[SOS]], device=DEVICE)
-  decoder_hidden = encoder_hidden
-  use_teacher_forcing = True if random.random() < teacher_forcing_ratio else False
-  if use_teacher_forcing:
-    # Teacher forcing: Feed the target as the next input
-    for di in range(target_length):
-      decoder_output, decoder_hidden, decoder_attention = decoder(decoder_input, decoder_hidden, encoder_outputs)
-      loss += criterion(decoder_output, target_tensor[di])
-      decoder_input = target_tensor[di]  # Teacher forcing
-  else:
-    # Without teacher forcing: use its own predictions as the next input
-    for di in range(target_length):
-      decoder_output, decoder_hidden, decoder_attention = decoder(decoder_input, decoder_hidden, encoder_outputs)
-      topv, topi = decoder_output.topk(1)
-      decoder_input = topi.squeeze().detach()  # detach from history as input
-      loss += criterion(decoder_output, target_tensor[di])
-      if decoder_input.item() == EOS: break
-
+  loss = model(input_tensor, target_tensor, criterion)
   loss.backward()
 
-  encoder_optimizer.step()
-  decoder_optimizer.step()
+  optimizer.step()
 
+  target_length = target_tensor.size(0)
   return loss.item() / target_length
 
 
-def trainIters(input_lang, output_lang, pairs, encoder, decoder, n_iters, print_every=1000, plot_every=100, learning_rate=0.01):
+def trainIters(input_lang, output_lang, pairs, model, n_iters, print_every=1000, plot_every=100, learning_rate=0.01):
   start = time.time()
   plot_losses = []
   print_loss_total = 0  # Reset every print_every
   plot_loss_total = 0  # Reset every plot_every
 
-  encoder_optimizer = optim.SGD(encoder.parameters(), lr=learning_rate)
-  decoder_optimizer = optim.SGD(decoder.parameters(), lr=learning_rate)
+  optimizer = optim.SGD(model.parameters(), lr=learning_rate)
   training_pairs = [tensorsFromPair(input_lang, output_lang, random.choice(pairs)) for i in range(n_iters)]
   criterion = nn.NLLLoss()
 
@@ -83,7 +50,7 @@ def trainIters(input_lang, output_lang, pairs, encoder, decoder, n_iters, print_
     input_tensor = training_pair[0]
     target_tensor = training_pair[1]
 
-    loss = train(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, decoder_optimizer, criterion, input_lang.max_length + 1)
+    loss = train(input_tensor, target_tensor, model, optimizer, criterion)
     print_loss_total += loss
     plot_loss_total += loss
 
@@ -104,8 +71,7 @@ if __name__ == "__main__":
   orig, summ, pairs = prepareData('org', 'sht')
 
   hidden_size = 100
-  encoder = EncoderRNN(len(orig.index2word), hidden_size).to(DEVICE)
-  decoder = AttnDecoderRNN(encoder, orig.max_length + 1).to(DEVICE)
+  model = Seq2Seq(len(orig.index2word), hidden_size, hidden_size, orig.max_length + 1, summ.max_length + 1)
 
-  trainIters(orig, summ, pairs, encoder, decoder, 5000, print_every=100)
-  torch.save((encoder.state_dict(), decoder.state_dict()), 'checkpoints/summ.pt')
+  trainIters(orig, summ, pairs, model, 5000, print_every=100)
+  torch.save(model.state_dict(), 'checkpoints/newsumm.pt')
