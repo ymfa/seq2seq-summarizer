@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from torch import optim
 import time, random
-from utils import MAX_LENGTH, EOS, SOS, timeSince, showPlot, prepareData
+from utils import EOS, SOS, timeSince, showPlot, prepareData
 from model import DEVICE, EncoderRNN, AttnDecoderRNN
 
 
@@ -26,7 +26,7 @@ def tensorsFromPair(input_lang, output_lang, pair):
 teacher_forcing_ratio = 0.5
 
 
-def train(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, decoder_optimizer, criterion, max_length=MAX_LENGTH):
+def train(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, decoder_optimizer, criterion, max_length):
   encoder_hidden = encoder.initHidden()
 
   encoder_optimizer.zero_grad()
@@ -47,9 +47,9 @@ def train(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, deco
   if use_teacher_forcing:
     # Teacher forcing: Feed the target as the next input
     for di in range(target_length):
-        decoder_output, decoder_hidden, decoder_attention = decoder(decoder_input, decoder_hidden, encoder_outputs)
-        loss += criterion(decoder_output, target_tensor[di])
-        decoder_input = target_tensor[di]  # Teacher forcing
+      decoder_output, decoder_hidden, decoder_attention = decoder(decoder_input, decoder_hidden, encoder_outputs)
+      loss += criterion(decoder_output, target_tensor[di])
+      decoder_input = target_tensor[di]  # Teacher forcing
   else:
     # Without teacher forcing: use its own predictions as the next input
     for di in range(target_length):
@@ -83,7 +83,7 @@ def trainIters(input_lang, output_lang, pairs, encoder, decoder, n_iters, print_
     input_tensor = training_pair[0]
     target_tensor = training_pair[1]
 
-    loss = train(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, decoder_optimizer, criterion)
+    loss = train(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, decoder_optimizer, criterion, input_lang.max_length + 1)
     print_loss_total += loss
     plot_loss_total += loss
 
@@ -101,11 +101,11 @@ def trainIters(input_lang, output_lang, pairs, encoder, decoder, n_iters, print_
 
 
 if __name__ == "__main__":
-  french, english, pairs = prepareData('eng', 'fra', reverse=True)
+  orig, summ, pairs = prepareData('org', 'sht')
 
-  hidden_size = 64
-  encoder = EncoderRNN(len(french.index2word), hidden_size).to(DEVICE)
-  decoder = AttnDecoderRNN(hidden_size, len(english.index2word)).to(DEVICE)
+  hidden_size = 100
+  encoder = EncoderRNN(len(orig.index2word), hidden_size).to(DEVICE)
+  decoder = AttnDecoderRNN(hidden_size, len(summ.index2word), orig.max_length + 1).to(DEVICE)
 
-  trainIters(french, english, pairs, encoder, decoder, 5000)
-  torch.save((encoder.state_dict(), decoder.state_dict()), 'checkpoints/debug.pt')
+  trainIters(orig, summ, pairs, encoder, decoder, 5000, print_every=100)
+  torch.save((encoder.state_dict(), decoder.state_dict()), 'checkpoints/summ.pt')

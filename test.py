@@ -1,9 +1,9 @@
 from train import tensorFromSentence
 from model import DEVICE
-from utils import MAX_LENGTH, SOS, EOS
+from utils import SOS, EOS
 import torch
 
-def evaluate(input_lang, output_lang, encoder, decoder, sentence, max_length=MAX_LENGTH):
+def evaluate(input_lang, output_lang, encoder, decoder, sentence, max_length):
   with torch.no_grad():
     input_tensor = tensorFromSentence(input_lang, sentence)
     input_length = input_tensor.size()[0]

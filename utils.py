@@ -15,10 +15,13 @@ class Lang:
     self.word2index = {}
     self.word2count = {}
     self.index2word = ['<SOS>', '<EOS>']
+    self.max_length = 0
 
   def addSentence(self, sentence):
-    for word in sentence.split(' '):
+    words = sentence.split(' ')
+    for word in words:
       self.addWord(word)
+    self.max_length = max(self.max_length, len(words))
 
   def addWord(self, word):
     if word not in self.word2index:
@@ -66,9 +69,6 @@ def readLangs(lang1, lang2, reverse=False):
   return input_lang, output_lang, pairs
 
 
-MAX_LENGTH = 10
-
-
 def filterPairs(pairs):
   return pairs[:500]  # for now, use the first 500 examples
 
@@ -82,9 +82,9 @@ def prepareData(lang1, lang2, reverse=False):
   for pair in pairs:
     input_lang.addSentence(pair[0])
     output_lang.addSentence(pair[1])
-  print("Counted words:")
-  print(input_lang.name, len(input_lang.index2word))
-  print(output_lang.name, len(output_lang.index2word))
+  print("Word counts and max sentence lengths:")
+  print(input_lang.name, len(input_lang.index2word), input_lang.max_length)
+  print(output_lang.name, len(output_lang.index2word), output_lang.max_length)
   return input_lang, output_lang, pairs
 
 

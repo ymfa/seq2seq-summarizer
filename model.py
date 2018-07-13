@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from utils import MAX_LENGTH
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -45,7 +44,7 @@ class DecoderRNN(nn.Module):
 
 
 class AttnDecoderRNN(nn.Module):
-  def __init__(self, hidden_size, output_size, dropout_p=0.1, max_length=MAX_LENGTH):
+  def __init__(self, hidden_size, output_size, max_length, dropout_p=0.1):
     super(AttnDecoderRNN, self).__init__()
     self.hidden_size = hidden_size
     self.output_size = output_size
