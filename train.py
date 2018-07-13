@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from torch import optim
 import time, random
-from utils import EOS, SOS, timeSince, showPlot, prepareData
+from utils import EOS, SOS, PAD, timeSince, showPlot, prepareData
 from model import DEVICE, Seq2Seq
 
 
@@ -10,17 +10,26 @@ def indexesFromSentence(lang, sentence):
   return [lang.word2index[word] for word in sentence.split(' ')]
 
 
-def tensorFromSentence(lang, sentence):
-  indexes = indexesFromSentence(lang, sentence)
-  indexes.append(EOS)
-  # "view" reshapes the vector to a matrix (any number of rows (-1) * one column (1))
-  return torch.tensor(indexes, dtype=torch.long, device=DEVICE).view(-1, 1)
+def tensorFromSentences(lang, sentences):
+  content = []
+  longest_len = 0
+  for sentence in sentences:
+    indexes = indexesFromSentence(lang, sentence)
+    indexes.append(EOS)
+    content.append(indexes)
+    longest_len = max(len(indexes), longest_len)
+  for indexes in content:
+    if len(indexes) < longest_len:
+      indexes.extend([PAD] * (longest_len - len(indexes)))
+  return torch.tensor(content, dtype=torch.long, device=DEVICE).transpose(0, 1)
 
 
-def tensorsFromPair(input_lang, output_lang, pair):
-  input_tensor = tensorFromSentence(input_lang, pair[0])
-  target_tensor = tensorFromSentence(output_lang, pair[1])
-  return (input_tensor, target_tensor)
+def tensorsFromPairs(input_lang, output_lang, pairs):
+  input_sentences = [pair[0] for pair in pairs]
+  output_sentences = [pair[1] for pair in pairs]
+  input_tensor = tensorFromSentences(input_lang, input_sentences)
+  target_tensor = tensorFromSentences(output_lang, output_sentences)
+  return input_tensor, target_tensor
 
 
 def train(input_tensor, target_tensor, model, optimizer, criterion):
@@ -35,15 +44,16 @@ def train(input_tensor, target_tensor, model, optimizer, criterion):
   return loss.item() / target_length
 
 
-def trainIters(input_lang, output_lang, pairs, model, n_iters, print_every=1000, plot_every=100, learning_rate=0.01):
+def trainIters(input_lang, output_lang, pairs, model, n_pairs, batch_size=2, print_every=1000, plot_every=100, learning_rate=0.01):
   start = time.time()
   plot_losses = []
-  print_loss_total = 0  # Reset every print_every
-  plot_loss_total = 0  # Reset every plot_every
+  print_loss_total = 0  # reset every print_every
+  plot_loss_total = 0  # reset every plot_every
 
   optimizer = optim.SGD(model.parameters(), lr=learning_rate)
-  training_pairs = [tensorsFromPair(input_lang, output_lang, random.choice(pairs)) for i in range(n_iters)]
-  criterion = nn.NLLLoss()
+  n_iters = n_pairs // batch_size
+  training_pairs = [tensorsFromPairs(input_lang, output_lang, random.choices(pairs, k=batch_size)) for i in range(n_iters)]
+  criterion = nn.NLLLoss(ignore_index=PAD)
 
   for iter in range(1, n_iters + 1):
     training_pair = training_pairs[iter - 1]

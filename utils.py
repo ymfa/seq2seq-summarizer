@@ -3,8 +3,9 @@ import time, math
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
-SOS = 0
-EOS = 1
+PAD = 0
+SOS = 1
+EOS = 2
 
 
 class Lang:
@@ -12,7 +13,7 @@ class Lang:
     self.name = name
     self.word2index = {}
     self.word2count = {}
-    self.index2word = ['<SOS>', '<EOS>']
+    self.index2word = ['<PAD>', '<SOS>', '<EOS>']
     self.max_length = 0
 
   def addSentence(self, sentence):

@@ -15,11 +15,11 @@ class EncoderRNN(nn.Module):
     self.gru = nn.GRU(embed_size, hidden_size)
 
   def forward(self, embedded, hidden):
-    output, hidden = self.gru(embedded.unsqueeze(0), hidden)
+    output, hidden = self.gru(embedded, hidden)
     return output, hidden
 
-  def initHidden(self):
-    return torch.zeros(1, 1, self.hidden_size, device=DEVICE)
+  def initHidden(self, batch_size):
+    return torch.zeros(1, batch_size, self.hidden_size, device=DEVICE)
 
 
 class AttnDecoderRNN(nn.Module):
@@ -38,11 +38,10 @@ class AttnDecoderRNN(nn.Module):
 
   def forward(self, embedded, hidden, encoder_states):
     embedded = self.dropout(embedded)
+    attn_weights = F.softmax(self.attn(torch.cat((embedded, hidden[0]), 1)), dim=1)  # (batch size, sentence len)
+    attn_applied = (attn_weights * encoder_states.transpose(0, 2)).transpose(0, 2)
 
-    attn_weights = F.softmax(self.attn(torch.cat((embedded[0], hidden[0]), 1)), dim=1)
-    attn_applied = torch.bmm(attn_weights.unsqueeze(0), encoder_states.unsqueeze(0))
-
-    output = torch.cat((embedded[0], attn_applied[0]), 1)
+    output = torch.cat((embedded, attn_applied[0]), 1)
     output = self.attn_combine(output).unsqueeze(0)
 
     output = F.relu(output)
@@ -50,9 +49,6 @@ class AttnDecoderRNN(nn.Module):
 
     output = F.log_softmax(self.out(output[0]), dim=1)
     return output, hidden, attn_weights
-
-  def initHidden(self):
-    return torch.zeros(1, 1, self.hidden_size, device=DEVICE)
 
 
 class Seq2Seq(nn.Module):
@@ -70,42 +66,43 @@ class Seq2Seq(nn.Module):
 
   def forward(self, input_tensor, target_tensor=None, criterion=None, teacher_forcing_ratio=0.5):
     input_length = input_tensor.size(0)
+    batch_size = input_tensor.size(1)
 
-    encoder_hidden = self.encoder.initHidden()
-    encoder_outputs = torch.zeros(self.max_input_length, self.encoder.hidden_size, device=DEVICE)
+    encoder_hidden = self.encoder.initHidden(batch_size)
+    encoder_outputs = torch.zeros(self.max_input_length, batch_size, self.encoder.hidden_size, device=DEVICE)
     encoder_embedded = self.embedding(input_tensor)  # (input len, batch size, embed size)
 
-    for ei in range(input_length):
-      encoder_output, encoder_hidden = self.encoder(encoder_embedded[ei], encoder_hidden)
-      encoder_outputs[ei] = encoder_output[0, 0]
+    encoder_outputs[:input_length], encoder_hidden = self.encoder(encoder_embedded, encoder_hidden)
     
     if criterion:  # training: compute loss
       loss = 0
       use_teacher_forcing = random.random() < teacher_forcing_ratio
       target_length = target_tensor.size(0)
     else:  # testing: decode tokens
-      decoded_tokens = []
+      decoded_tokens = [[] for _ in range(batch_size)]
       use_teacher_forcing = False
       target_length = self.max_output_length
-      decoder_attentions = torch.zeros(target_length, self.max_input_length)
+      decoder_attentions = torch.zeros(target_length, batch_size, self.max_input_length)
 
-    decoder_input = torch.tensor([[SOS]], device=DEVICE)
+    decoder_input = torch.tensor([SOS] * batch_size, device=DEVICE)
     decoder_hidden = encoder_hidden
 
     for di in range(target_length):
-      decoder_embedded = self.embedding(decoder_input).view(1, 1, -1)
+      decoder_embedded = self.embedding(decoder_input)
       decoder_output, decoder_hidden, decoder_attention = self.decoder(decoder_embedded, decoder_hidden, encoder_outputs)
       if criterion:
         loss += criterion(decoder_output, target_tensor[di])
       if use_teacher_forcing:
         decoder_input = target_tensor[di]  # teacher forcing
       else:
-        _, topi = decoder_output.topk(1)
-        decoder_input = topi.squeeze().detach()  # detach from history as input
+        _, topi = decoder_output.data.topk(1)  # topi shape: (batch size, k=1)
+        topi = topi.squeeze(1)
         if not criterion:
-          decoded_tokens.append(decoder_input.item())
+          for bi in range(batch_size):
+            decoded_tokens[bi].append(topi[bi].item())
           decoder_attentions[di] = decoder_attention.data
-        if decoder_input.item() == EOS: break
+        decoder_input = topi.detach()  # detach from history as input
+        #if decoder_input.item() == EOS: break
     
     if criterion:
       return loss
