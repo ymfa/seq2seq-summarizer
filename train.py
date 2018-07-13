@@ -105,7 +105,7 @@ if __name__ == "__main__":
 
   hidden_size = 100
   encoder = EncoderRNN(len(orig.index2word), hidden_size).to(DEVICE)
-  decoder = AttnDecoderRNN(hidden_size, len(summ.index2word), orig.max_length + 1).to(DEVICE)
+  decoder = AttnDecoderRNN(encoder, orig.max_length + 1).to(DEVICE)
 
   trainIters(orig, summ, pairs, encoder, decoder, 5000, print_every=100)
   torch.save((encoder.state_dict(), decoder.state_dict()), 'checkpoints/summ.pt')
