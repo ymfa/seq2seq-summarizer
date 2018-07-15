@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 import random
-from utils import SOS, EOS
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -14,8 +14,13 @@ class EncoderRNN(nn.Module):
     self.hidden_size = hidden_size
     self.gru = nn.GRU(embed_size, hidden_size)
 
-  def forward(self, embedded, hidden):
-    output, hidden = self.gru(embedded, hidden)
+  def forward(self, embedded, hidden, input_lengths=None):
+    if input_lengths is not None:
+      embedded_packed = pack_padded_sequence(embedded, input_lengths)
+      output_packed, hidden = self.gru(embedded_packed, hidden)
+      output, _ = pad_packed_sequence(output_packed)
+    else:
+      output, hidden = self.gru(embedded, hidden)
     return output, hidden
 
   def initHidden(self, batch_size):
@@ -38,7 +43,8 @@ class AttnDecoderRNN(nn.Module):
 
   def forward(self, embedded, hidden, encoder_states):
     embedded = self.dropout(embedded)
-    attn_weights = F.softmax(self.attn(torch.cat((embedded, hidden[0]), 1)), dim=1)  # (batch size, sentence len)
+    # attn_weights shape (batch size, sentence len)
+    attn_weights = F.softmax(self.attn(torch.cat((embedded, hidden[0]), 1)), dim=1)
     attn_applied = (attn_weights * encoder_states.transpose(0, 2)).transpose(0, 2)
 
     output = torch.cat((embedded, attn_applied[0]), 1)
@@ -53,26 +59,30 @@ class AttnDecoderRNN(nn.Module):
 
 class Seq2Seq(nn.Module):
 
-  def __init__(self, vocab_size, embed_size, hidden_size, max_input_length, max_output_length):
+  def __init__(self, vocab, embed_size, hidden_size, max_input_length, max_output_length):
     super(Seq2Seq, self).__init__()
-    self.vocab_size = vocab_size
+    self.SOS = vocab.SOS
+    self.vocab_size = len(vocab)
     self.embed_size = embed_size
     self.max_input_length = max_input_length
     self.max_output_length = max_output_length
 
-    self.embedding = nn.Embedding(vocab_size, embed_size)
+    self.embedding = nn.Embedding(self.vocab_size, embed_size)
     self.encoder = EncoderRNN(embed_size, hidden_size)
-    self.decoder = AttnDecoderRNN(vocab_size, hidden_size, max_input_length)
+    self.decoder = AttnDecoderRNN(self.vocab_size, hidden_size, max_input_length)
 
-  def forward(self, input_tensor, target_tensor=None, criterion=None, teacher_forcing_ratio=0.5):
+  def forward(self, input_tensor, target_tensor=None, input_lengths=None, criterion=None,
+              teacher_forcing_ratio=0.5):
     input_length = input_tensor.size(0)
     batch_size = input_tensor.size(1)
 
     encoder_hidden = self.encoder.initHidden(batch_size)
-    encoder_outputs = torch.zeros(self.max_input_length, batch_size, self.encoder.hidden_size, device=DEVICE)
+    encoder_outputs = torch.zeros(self.max_input_length, batch_size, self.encoder.hidden_size,
+                                  device=DEVICE)
     encoder_embedded = self.embedding(input_tensor)  # (input len, batch size, embed size)
 
-    encoder_outputs[:input_length], encoder_hidden = self.encoder(encoder_embedded, encoder_hidden)
+    encoder_outputs[:input_length], encoder_hidden = \
+      self.encoder(encoder_embedded, encoder_hidden, input_lengths)
     
     if criterion:  # training: compute loss
       loss = 0
@@ -84,12 +94,13 @@ class Seq2Seq(nn.Module):
       target_length = self.max_output_length
       decoder_attentions = torch.zeros(target_length, batch_size, self.max_input_length)
 
-    decoder_input = torch.tensor([SOS] * batch_size, device=DEVICE)
+    decoder_input = torch.tensor([self.SOS] * batch_size, device=DEVICE)
     decoder_hidden = encoder_hidden
 
     for di in range(target_length):
       decoder_embedded = self.embedding(decoder_input)
-      decoder_output, decoder_hidden, decoder_attention = self.decoder(decoder_embedded, decoder_hidden, encoder_outputs)
+      decoder_output, decoder_hidden, decoder_attention = \
+        self.decoder(decoder_embedded, decoder_hidden, encoder_outputs)
       if criterion:
         loss += criterion(decoder_output, target_tensor[di])
       if use_teacher_forcing:

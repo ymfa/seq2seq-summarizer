@@ -1,9 +1,7 @@
-from train import tensorFromSentences
 import torch
 
-def evaluate(input_lang, output_lang, model, sentence):
+def evaluate(vocab, model, input_tensor):
   with torch.no_grad():
-    input_tensor = tensorFromSentences(input_lang, [sentence])
     decoded_tokens, decoder_attentions = model(input_tensor)
-    decoded_sentence = ' '.join(output_lang.index2word[t] for t in decoded_tokens[0])
+    decoded_sentence = ' '.join(vocab.index2word[t] for t in decoded_tokens[0])
   return decoded_sentence, decoder_attentions[:,0,:]

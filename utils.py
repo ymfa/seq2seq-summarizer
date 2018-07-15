@@ -1,107 +1,127 @@
-import re, unicodedata
-import time, math
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
+from typing import NamedTuple, List, Callable
+from collections import Counter
+from random import shuffle
+import torch
 
-PAD = 0
-SOS = 1
-EOS = 2
 
+class Vocab(object):
 
-class Lang:
-  def __init__(self, name):
+  PAD = 0
+  SOS = 1
+  EOS = 2
+  UNK = 3
+
+  def __init__(self, name: str):
     self.name = name
     self.word2index = {}
-    self.word2count = {}
-    self.index2word = ['<PAD>', '<SOS>', '<EOS>']
-    self.max_length = 0
+    self.word2count = Counter()
+    self.index2word = ['<PAD>', '<SOS>', '<EOS>', '<UNK>']
 
-  def addSentence(self, sentence):
-    words = sentence.split(' ')
+  def add_words(self, words: List[str]):
     for word in words:
-      self.addWord(word)
-    self.max_length = max(self.max_length, len(words))
+      if word not in self.word2index:
+        self.word2index[word] = len(self.index2word)
+        self.index2word.append(word)
+    self.word2count.update(words)
 
-  def addWord(self, word):
-    if word not in self.word2index:
-      self.word2index[word] = len(self.index2word)
-      self.word2count[word] = 1
-      self.index2word.append(word)
-    else:
-      self.word2count[word] += 1
+  def __getitem__(self, item):
+    if type(item) is int:
+      return self.index2word[item]
+    return self.word2index.get(item, self.UNK)
 
-
-# Remove accents to obtain plain ASCII, thanks to
-# http://stackoverflow.com/a/518232/2809427
-def deaccent(s):
-  return ''.join(
-    c for c in unicodedata.normalize('NFD', s)
-    if unicodedata.category(c) != 'Mn'
-  )
+  def __len__(self):
+    return len(self.index2word)
 
 
-# Lowercase, trim, and remove non-letter characters
-def normalizeString(s):
-  s = deaccent(s.lower().strip())
-  s = re.sub(r"([.!?])", r" \1", s)
-  s = re.sub(r"[^a-zA-Z.!?]+", r" ", s)
-  return s
+class Example(NamedTuple):
+  src: List[str]
+  tgt: List[str]
+  src_len: int
+  tgt_len: int
 
 
-def readLangs(lang1, lang2, reverse=False):
-  print("Reading lines...")
-
-  # Read the file and split into lines
-  lines = open('data/%s-%s.txt' % (lang1, lang2), encoding='utf-8').\
-      read().strip().split('\n')
-
-  # Split every line into pairs and normalize
-  pairs = [[normalizeString(s) for s in l.split('\t')] for l in lines]
-
-  # Reverse pairs, make Lang instances
-  if reverse:
-    pairs = [list(reversed(p)) for p in pairs]
-    lang1, lang2 = lang2, lang1
-  input_lang = Lang(lang1)
-  output_lang = Lang(lang2)
-
-  return input_lang, output_lang, pairs
+def simple_tokenizer(text: str, lower: bool=False, paragraph_break: str=None) -> List[str]:
+  all_tokens = []
+  for p in text.split('\n'):
+    if len(all_tokens) > 0 and paragraph_break:
+      all_tokens.append(paragraph_break)
+    tokens = p.split()
+    if lower:
+      tokens = [t.lower() for t in tokens]
+    all_tokens.extend(tokens)
+  return all_tokens
 
 
-def filterPairs(pairs):
-  return pairs[:500]  # for now, use the first 500 examples
+class Dataset(object):
+
+  def __init__(self, filename: str, tokenize: Callable=simple_tokenizer):
+    print("Reading dataset %s..." % filename)
+    self.pairs = []
+    self.src_len = 0
+    self.tgt_len = 0
+    with open(filename, encoding='utf-8') as f:
+      for i, line in enumerate(f):
+        pair = line.strip().split('\t')
+        if len(pair) != 2:
+          print("Line %d of %s is malformed." % (i, filename))
+          continue
+        src = tokenize(pair[0])
+        tgt = tokenize(pair[1])
+        src_len = len(src) + 1  # EOS
+        tgt_len = len(tgt) + 1  # EOS
+        self.src_len = max(self.src_len, src_len)
+        self.tgt_len = max(self.tgt_len, tgt_len)
+        self.pairs.append(Example(src, tgt, src_len, tgt_len))
+
+  def build_vocab(self, lang_name: str, src: bool=True, tgt: bool=False) -> Vocab:
+    print("Building vocabulary %s..." % lang_name)
+    vocab = Vocab(lang_name)
+    for example in self.pairs:
+      if src:
+        vocab.add_words(example.src)
+      if tgt:
+        vocab.add_words(example.tgt)
+    return vocab
+
+  def generator(self, batch_size: int, src_vocab: Vocab=None, tgt_vocab: Vocab=None):
+    ptr = len(self.pairs)  # make sure to shuffle at first run
+    while True:
+      if ptr + batch_size > len(self.pairs):
+        shuffle(self.pairs)  # shuffle inplace to save memory
+        ptr = 0
+      examples = self.pairs[ptr:ptr + batch_size]
+      ptr += batch_size
+      if src_vocab or tgt_vocab:
+        if src_vocab:
+          examples.sort(key=lambda x: -x.src_len)
+          lengths = [x.src_len for x in examples]
+          max_src_len = lengths[0]
+          src_tensor = torch.zeros(max_src_len, batch_size, dtype=torch.long)
+        if tgt_vocab:
+          max_tgt_len = max(x.tgt_len for x in examples)
+          tgt_tensor = torch.zeros(max_tgt_len, batch_size, dtype=torch.long)
+        for i, example in enumerate(examples):
+          if src_vocab:
+            for j, word in enumerate(example.src):
+              src_tensor[j, i] = src_vocab[word]
+            src_tensor[example.src_len - 1, i] = src_vocab.EOS
+          if tgt_vocab:
+            for j, word in enumerate(example.tgt):
+              tgt_tensor[j, i] = tgt_vocab[word]
+            tgt_tensor[example.tgt_len - 1, i] = tgt_vocab.EOS
+        if src_vocab and tgt_vocab:
+          yield examples, src_tensor, tgt_tensor, lengths
+        elif src_vocab:
+          yield examples, src_tensor, lengths
+        else:
+          yield examples, tgt_tensor
+      else:
+        yield examples
 
 
-def prepareData(lang1, lang2, reverse=False):
-  input_lang, output_lang, pairs = readLangs(lang1, lang2, reverse)
-  print("Read %s sentence pairs" % len(pairs))
-  pairs = filterPairs(pairs)
-  print("Trimmed to %s sentence pairs" % len(pairs))
-  print("Counting words...")
-  for pair in pairs:
-    input_lang.addSentence(pair[0])
-    output_lang.addSentence(pair[1])
-  print("Word counts and max sentence lengths:")
-  print(input_lang.name, len(input_lang.index2word), input_lang.max_length)
-  print(output_lang.name, len(output_lang.index2word), output_lang.max_length)
-  return input_lang, output_lang, pairs
-
-
-def asMinutes(s):
-  m = math.floor(s / 60)
-  s -= m * 60
-  return '%dm %ds' % (m, s)
-
-
-def timeSince(since, percent):
-  now = time.time()
-  s = now - since
-  es = s / (percent)
-  rs = es - s
-  return '%s (ETA %s)' % (asMinutes(s), asMinutes(rs))
-
-
-def showPlot(points):
+def show_plot(points):
   plt.figure()
   fig, ax = plt.subplots()
   # this locator puts ticks at regular intervals

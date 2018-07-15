@@ -1,87 +1,60 @@
 import torch
 import torch.nn as nn
 from torch import optim
-import time, random
-from utils import EOS, SOS, PAD, timeSince, showPlot, prepareData
-from model import DEVICE, Seq2Seq
+from tqdm import tqdm
+from utils import Dataset, show_plot
+from model import Seq2Seq, DEVICE
 
 
-def indexesFromSentence(lang, sentence):
-  return [lang.word2index[word] for word in sentence.split(' ')]
+def train_batch(batch, model, optimizer, criterion):
+  _, input_tensor, target_tensor, input_lengths = batch
 
-
-def tensorFromSentences(lang, sentences):
-  content = []
-  longest_len = 0
-  for sentence in sentences:
-    indexes = indexesFromSentence(lang, sentence)
-    indexes.append(EOS)
-    content.append(indexes)
-    longest_len = max(len(indexes), longest_len)
-  for indexes in content:
-    if len(indexes) < longest_len:
-      indexes.extend([PAD] * (longest_len - len(indexes)))
-  return torch.tensor(content, dtype=torch.long, device=DEVICE).transpose(0, 1)
-
-
-def tensorsFromPairs(input_lang, output_lang, pairs):
-  input_sentences = [pair[0] for pair in pairs]
-  output_sentences = [pair[1] for pair in pairs]
-  input_tensor = tensorFromSentences(input_lang, input_sentences)
-  target_tensor = tensorFromSentences(output_lang, output_sentences)
-  return input_tensor, target_tensor
-
-
-def train(input_tensor, target_tensor, model, optimizer, criterion):
   optimizer.zero_grad()
-
-  loss = model(input_tensor, target_tensor, criterion)
+  loss = model(input_tensor.to(DEVICE), target_tensor.to(DEVICE), input_lengths, criterion)
   loss.backward()
-
   optimizer.step()
 
   target_length = target_tensor.size(0)
   return loss.item() / target_length
 
 
-def trainIters(input_lang, output_lang, pairs, model, n_pairs, batch_size=2, print_every=1000, plot_every=100, learning_rate=0.01):
-  start = time.time()
-  plot_losses = []
-  print_loss_total = 0  # reset every print_every
-  plot_loss_total = 0  # reset every plot_every
-
+def train(generator, vocab, model, n_batches=100, n_epochs=5, *, plot_every=20,
+          learning_rate=0.01):
+  plot_losses, cached_losses = [], []
+  model.train()
   optimizer = optim.SGD(model.parameters(), lr=learning_rate)
-  n_iters = n_pairs // batch_size
-  training_pairs = [tensorsFromPairs(input_lang, output_lang, random.choices(pairs, k=batch_size)) for i in range(n_iters)]
-  criterion = nn.NLLLoss(ignore_index=PAD)
+  criterion = nn.NLLLoss(ignore_index=vocab.PAD)
 
-  for iter in range(1, n_iters + 1):
-    training_pair = training_pairs[iter - 1]
-    input_tensor = training_pair[0]
-    target_tensor = training_pair[1]
+  for epoch_count in range(1, n_epochs + 1):
+    epoch_loss = 0
+    prog_bar = tqdm(range(1, n_batches + 1), desc='Epoch %d' % epoch_count)
 
-    loss = train(input_tensor, target_tensor, model, optimizer, criterion)
-    print_loss_total += loss
-    plot_loss_total += loss
+    for batch_count in prog_bar:
+      batch = next(generator)
+      loss = train_batch(batch, model, optimizer, criterion)
 
-    if iter % print_every == 0:
-      print_loss_avg = print_loss_total / print_every
-      print_loss_total = 0
-      print('%s (%d %d%%) %.4f' % (timeSince(start, iter / n_iters), iter, iter / n_iters * 100, print_loss_avg))
+      epoch_loss += float(loss)
+      epoch_avg_loss = epoch_loss / batch_count
+      prog_bar.set_postfix(loss='%g' % epoch_avg_loss)
 
-    if iter % plot_every == 0:
-      plot_loss_avg = plot_loss_total / plot_every
-      plot_losses.append(plot_loss_avg)
-      plot_loss_total = 0
+      cached_losses.append(loss)
+      if batch_count % plot_every == 0:
+        period_avg_loss = sum(cached_losses) / len(cached_losses)
+        plot_losses.append(period_avg_loss)
+        cached_losses = []
 
-  showPlot(plot_losses)
+  show_plot(plot_losses)
 
 
 if __name__ == "__main__":
-  orig, summ, pairs = prepareData('org', 'sht')
-
   hidden_size = 100
-  model = Seq2Seq(len(orig.index2word), hidden_size, hidden_size, orig.max_length + 1, summ.max_length + 1)
+  embed_size = 100
+  batch_size = 4
 
-  trainIters(orig, summ, pairs, model, 5000, print_every=100)
-  torch.save(model.state_dict(), 'checkpoints/newsumm.pt')
+  dataset = Dataset('data/org-sht.txt')
+  vocabulary = dataset.build_vocab('eng')
+  training_data = dataset.generator(batch_size, vocabulary, vocabulary)
+  m = Seq2Seq(vocabulary, embed_size, hidden_size, dataset.src_len, dataset.tgt_len)
+
+  train(training_data, vocabulary, m, n_batches=1000, n_epochs=5)
+  torch.save(m.state_dict(), 'checkpoints/batsumm.pt')
