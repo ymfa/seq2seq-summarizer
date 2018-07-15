@@ -17,7 +17,8 @@ class Vocab(object):
     self.name = name
     self.word2index = {}
     self.word2count = Counter()
-    self.index2word = ['<PAD>', '<SOS>', '<EOS>', '<UNK>']
+    self.reserved = ['<PAD>', '<SOS>', '<EOS>', '<UNK>']
+    self.index2word = self.reserved[:]
 
   def add_words(self, words: List[str]):
     for word in words:
@@ -25,6 +26,17 @@ class Vocab(object):
         self.word2index[word] = len(self.index2word)
         self.index2word.append(word)
     self.word2count.update(words)
+
+  def trim(self, vocab_size: int):
+    if len(self.word2index) > vocab_size:
+      ordered_words = sorted(((c, w) for (w, c) in self.word2count.items()), reverse=True)
+      self.word2index = {}
+      self.word2count = Counter()
+      self.index2word = self.reserved[:]
+      for count, word in ordered_words[:vocab_size]:
+        self.word2index[word] = len(self.index2word)
+        self.word2count[word] = count
+        self.index2word.append(word)
 
   def __getitem__(self, item):
     if type(item) is int:
@@ -56,8 +68,9 @@ def simple_tokenizer(text: str, lower: bool=False, paragraph_break: str=None) ->
 
 class Dataset(object):
 
-  def __init__(self, filename: str, tokenize: Callable=simple_tokenizer):
-    print("Reading dataset %s..." % filename)
+  def __init__(self, filename: str, tokenize: Callable=simple_tokenizer, max_src_len: int=None,
+               max_tgt_len: int=None):
+    print("Reading dataset %s..." % filename, end=' ', flush=True)
     self.pairs = []
     self.src_len = 0
     self.tgt_len = 0
@@ -68,21 +81,26 @@ class Dataset(object):
           print("Line %d of %s is malformed." % (i, filename))
           continue
         src = tokenize(pair[0])
+        if max_src_len and len(src) > max_src_len: continue
         tgt = tokenize(pair[1])
+        if max_tgt_len and len(tgt) > max_tgt_len: continue
         src_len = len(src) + 1  # EOS
         tgt_len = len(tgt) + 1  # EOS
         self.src_len = max(self.src_len, src_len)
         self.tgt_len = max(self.tgt_len, tgt_len)
         self.pairs.append(Example(src, tgt, src_len, tgt_len))
+    print("%d pairs." % len(self.pairs))
 
-  def build_vocab(self, lang_name: str, src: bool=True, tgt: bool=False) -> Vocab:
-    print("Building vocabulary %s..." % lang_name)
+  def build_vocab(self, lang_name: str, vocab_size: int, src: bool=True, tgt: bool=False) -> Vocab:
+    print("Building vocabulary %s..." % lang_name, end=' ', flush=True)
     vocab = Vocab(lang_name)
     for example in self.pairs:
       if src:
         vocab.add_words(example.src)
       if tgt:
         vocab.add_words(example.tgt)
+    vocab.trim(vocab_size)
+    print("%d words." % len(vocab))
     return vocab
 
   def generator(self, batch_size: int, src_vocab: Vocab=None, tgt_vocab: Vocab=None):
