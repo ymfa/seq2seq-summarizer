@@ -27,16 +27,20 @@ class Vocab(object):
         self.index2word.append(word)
     self.word2count.update(words)
 
-  def trim(self, vocab_size: int):
-    if len(self.word2index) > vocab_size:
-      ordered_words = sorted(((c, w) for (w, c) in self.word2count.items()), reverse=True)
-      self.word2index = {}
-      self.word2count = Counter()
-      self.index2word = self.reserved[:]
-      for count, word in ordered_words[:vocab_size]:
-        self.word2index[word] = len(self.index2word)
-        self.word2count[word] = count
-        self.index2word.append(word)
+  def trim(self, *, vocab_size: int=None, min_freq: int=1):
+    if min_freq <= 1 and (vocab_size is None or vocab_size >= len(self.word2index)):
+      return
+    ordered_words = sorted(((c, w) for (w, c) in self.word2count.items()), reverse=True)
+    if vocab_size:
+      ordered_words = ordered_words[:vocab_size]
+    self.word2index = {}
+    self.word2count = Counter()
+    self.index2word = self.reserved[:]
+    for count, word in ordered_words:
+      if count < min_freq: break
+      self.word2index[word] = len(self.index2word)
+      self.word2count[word] = count
+      self.index2word.append(word)
 
   def __getitem__(self, item):
     if type(item) is int:
@@ -91,7 +95,8 @@ class Dataset(object):
         self.pairs.append(Example(src, tgt, src_len, tgt_len))
     print("%d pairs." % len(self.pairs))
 
-  def build_vocab(self, lang_name: str, vocab_size: int, src: bool=True, tgt: bool=False) -> Vocab:
+  def build_vocab(self, lang_name: str, vocab_size: int=None, src: bool=True, tgt: bool=False)\
+          -> Vocab:
     print("Building vocabulary %s..." % lang_name, end=' ', flush=True)
     vocab = Vocab(lang_name)
     for example in self.pairs:
@@ -99,7 +104,7 @@ class Dataset(object):
         vocab.add_words(example.src)
       if tgt:
         vocab.add_words(example.tgt)
-    vocab.trim(vocab_size)
+    vocab.trim(vocab_size=vocab_size)
     print("%d words." % len(vocab))
     return vocab
 

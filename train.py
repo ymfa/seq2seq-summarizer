@@ -47,15 +47,14 @@ def train(generator, vocab, model, n_batches=100, n_epochs=5, *, plot_every=20,
 
 
 if __name__ == "__main__":
-  vocab_size = 5000
-  hidden_size = 100
-  embed_size = 100
-  batch_size = 4
+  from params import *
+  import matplotlib.pyplot as plt
 
-  dataset = Dataset('data/short.10000.txt', max_src_len=80, max_tgt_len=25)
+  dataset = Dataset(data_path, max_src_len=80, max_tgt_len=25)
   vocabulary = dataset.build_vocab('english', vocab_size, True, True)
   training_data = dataset.generator(batch_size, vocabulary, vocabulary)
   m = Seq2Seq(vocabulary, embed_size, hidden_size, dataset.src_len, dataset.tgt_len)
 
   train(training_data, vocabulary, m, n_batches=1000, n_epochs=5)
-  torch.save(m.state_dict(), 'checkpoints/batsumm.pt')
+  torch.save(m.state_dict(), model_path)
+  plt.show()
