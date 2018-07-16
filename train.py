@@ -19,10 +19,10 @@ def train_batch(batch, model, optimizer, criterion):
 
 
 def train(generator, vocab, model, n_batches=100, n_epochs=5, *, plot_every=20,
-          learning_rate=0.01):
+          learning_rate=0.001, auto_save_prefix=None):
   plot_losses, cached_losses = [], []
   model.train()
-  optimizer = optim.SGD(model.parameters(), lr=learning_rate)
+  optimizer = optim.Adam(model.parameters(), lr=learning_rate)
   criterion = nn.NLLLoss(ignore_index=vocab.PAD)
 
   for epoch_count in range(1, n_epochs + 1):
@@ -42,6 +42,10 @@ def train(generator, vocab, model, n_batches=100, n_epochs=5, *, plot_every=20,
         period_avg_loss = sum(cached_losses) / len(cached_losses)
         plot_losses.append(period_avg_loss)
         cached_losses = []
+
+    if auto_save_prefix:
+      filename = '%s.%02d.pt' % (auto_save_prefix, epoch_count)
+      torch.save(model.state_dict(), filename)
 
   show_plot(plot_losses)
 

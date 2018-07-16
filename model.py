@@ -23,17 +23,15 @@ class EncoderRNN(nn.Module):
       output, hidden = self.gru(embedded, hidden)
     return output, hidden
 
-  def initHidden(self, batch_size):
+  def init_hidden(self, batch_size):
     return torch.zeros(1, batch_size, self.hidden_size, device=DEVICE)
 
 
 class DecoderRNN(nn.Module):
 
-  def __init__(self, vocab_size, hidden_size, max_length, enc_attn: bool=True, dec_attn: bool=True,
-               dropout_p=0.1):
+  def __init__(self, vocab_size, hidden_size, enc_attn=True, dec_attn=True, dropout_p=0.1):
     super(DecoderRNN, self).__init__()
     self.hidden_size = hidden_size
-    self.max_length = max_length
     self.size_before_output = self.hidden_size
     self.enc_attn = enc_attn
 
@@ -88,31 +86,32 @@ class Seq2Seq(nn.Module):
 
     self.embedding = nn.Embedding(self.vocab_size, embed_size)
     self.encoder = EncoderRNN(embed_size, hidden_size)
-    self.decoder = DecoderRNN(self.vocab_size, hidden_size, max_input_length, enc_attn, dec_attn)
+    self.decoder = DecoderRNN(self.vocab_size, hidden_size, enc_attn, dec_attn)
 
   def forward(self, input_tensor, target_tensor=None, input_lengths=None, criterion=None,
               teacher_forcing_ratio=0.5):
     input_length = input_tensor.size(0)
     batch_size = input_tensor.size(1)
 
-    encoder_hidden = self.encoder.initHidden(batch_size)
-    encoder_outputs = torch.zeros(self.max_input_length, batch_size, self.encoder.hidden_size,
-                                  device=DEVICE)
+    encoder_hidden = self.encoder.init_hidden(batch_size)
     encoder_embedded = self.embedding(input_tensor)  # (input len, batch size, embed size)
 
-    encoder_outputs[:input_length], encoder_hidden = \
+    encoder_outputs, encoder_hidden = \
       self.encoder(encoder_embedded, encoder_hidden, input_lengths)
-    
+
+    if target_tensor is None:
+      target_length = self.max_output_length
+    else:
+      target_length = target_tensor.size(0)
+
     if criterion:  # training: compute loss
       loss = 0
-      use_teacher_forcing = random.random() < teacher_forcing_ratio
-      target_length = target_tensor.size(0)
+      #use_teacher_forcing = random.random() < teacher_forcing_ratio
     else:  # testing: decode tokens
       decoded_tokens = [[] for _ in range(batch_size)]
-      use_teacher_forcing = False
-      target_length = self.max_output_length
+      #use_teacher_forcing = False
       if self.enc_attn:
-        enc_attn_weights = torch.zeros(target_length, batch_size, self.max_input_length)
+        enc_attn_weights = torch.zeros(target_length, batch_size, input_length)
       else:
         enc_attn_weights = None
 
@@ -125,7 +124,8 @@ class Seq2Seq(nn.Module):
         self.decoder(decoder_embedded, decoder_hidden, encoder_outputs)
       if criterion:
         loss += criterion(decoder_output, target_tensor[di])
-      if use_teacher_forcing:
+      #if use_teacher_forcing:
+      if criterion and random.random() < teacher_forcing_ratio:
         decoder_input = target_tensor[di]  # teacher forcing
       else:
         _, topi = decoder_output.data.topk(1)  # topi shape: (batch size, k=1)
