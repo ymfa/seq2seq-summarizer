@@ -1,5 +1,6 @@
 import torch
 
+
 def evaluate(vocab, model, input_tensor):
   with torch.no_grad():
     model.eval()

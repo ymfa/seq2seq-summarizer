@@ -18,11 +18,12 @@ def train_batch(batch, model, optimizer, criterion):
   return loss.item() / target_length
 
 
-def train(generator, vocab, model, n_batches=100, n_epochs=5, *, plot_every=20,
-          learning_rate=0.001, auto_save_prefix=None):
+def train(generator, vocab, model, n_batches=100, n_epochs=5, *, lr=0.001,
+          plot_every=20, auto_save_prefix=None):
   plot_losses, cached_losses = [], []
+  model.to(DEVICE)
   model.train()
-  optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+  optimizer = optim.Adam(model.parameters(), lr=lr)
   criterion = nn.NLLLoss(ignore_index=vocab.PAD)
 
   for epoch_count in range(1, n_epochs + 1):
@@ -47,18 +48,16 @@ def train(generator, vocab, model, n_batches=100, n_epochs=5, *, plot_every=20,
       filename = '%s.%02d.pt' % (auto_save_prefix, epoch_count)
       torch.save(model.state_dict(), filename)
 
-  show_plot(plot_losses)
+  show_plot(plot_losses, auto_save_prefix)
 
 
 if __name__ == "__main__":
   from params import *
-  import matplotlib.pyplot as plt
 
   dataset = Dataset(data_path, max_src_len=80, max_tgt_len=25)
   vocabulary = dataset.build_vocab('english', vocab_size, True, True)
   training_data = dataset.generator(batch_size, vocabulary, vocabulary)
   m = Seq2Seq(vocabulary, embed_size, hidden_size, dataset.src_len, dataset.tgt_len)
 
-  train(training_data, vocabulary, m, n_batches=1000, n_epochs=5)
-  torch.save(m.state_dict(), model_path)
-  plt.show()
+  train(training_data, vocabulary, m, n_batches=num_batches, n_epochs=num_epochs, lr=learning_rate,
+        auto_save_prefix=model_path_prefix)

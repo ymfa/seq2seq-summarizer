@@ -5,6 +5,8 @@ from collections import Counter
 from random import shuffle
 import torch
 
+plt.switch_backend('agg')
+
 
 class Vocab(object):
 
@@ -144,10 +146,12 @@ class Dataset(object):
         yield examples
 
 
-def show_plot(points):
+def show_plot(points, file_prefix=None):
   plt.figure()
   fig, ax = plt.subplots()
   # this locator puts ticks at regular intervals
   loc = ticker.MultipleLocator(base=0.2)
   ax.yaxis.set_major_locator(loc)
   plt.plot(points)
+  if file_prefix:
+    plt.savefig(file_prefix + '.png')
