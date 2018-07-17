@@ -9,34 +9,43 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class EncoderRNN(nn.Module):
 
-  def __init__(self, embed_size, hidden_size):
+  def __init__(self, embed_size, hidden_size, bidi=True):
     super(EncoderRNN, self).__init__()
     self.hidden_size = hidden_size
-    self.gru = nn.GRU(embed_size, hidden_size)
+    self.num_directions = 2 if bidi else 1
+    self.gru = nn.GRU(embed_size, hidden_size, bidirectional=bidi)
 
   def forward(self, embedded, hidden, input_lengths=None):
     if input_lengths is not None:
-      embedded_packed = pack_padded_sequence(embedded, input_lengths)
-      output_packed, hidden = self.gru(embedded_packed, hidden)
-      output, _ = pad_packed_sequence(output_packed)
-    else:
-      output, hidden = self.gru(embedded, hidden)
+      embedded = pack_padded_sequence(embedded, input_lengths)
+
+    output, hidden = self.gru(embedded, hidden)
+
+    if input_lengths is not None:
+      output, _ = pad_packed_sequence(output)
+
+    if self.num_directions > 1:
+      # hidden: (num directions, batch, hidden) => (1, batch, hidden * 2)
+      batch_size = hidden.size(1)
+      hidden = hidden.transpose(0, 1).contiguous().view(1, batch_size,
+                                                        self.hidden_size * self.num_directions)
     return output, hidden
 
   def init_hidden(self, batch_size):
-    return torch.zeros(1, batch_size, self.hidden_size, device=DEVICE)
+    return torch.zeros(self.num_directions, batch_size, self.hidden_size, device=DEVICE)
 
 
 class DecoderRNN(nn.Module):
 
-  def __init__(self, vocab_size, hidden_size, enc_attn=True, dec_attn=True, dropout_p=0.1):
+  def __init__(self, vocab_size, embed_size, hidden_size, enc_attn=True, dec_attn=True,
+               dropout_p=0.1):
     super(DecoderRNN, self).__init__()
     self.hidden_size = hidden_size
     self.size_before_output = self.hidden_size
     self.enc_attn = enc_attn
 
     self.dropout = nn.Dropout(dropout_p)
-    self.gru = nn.GRU(self.hidden_size, self.hidden_size)
+    self.gru = nn.GRU(embed_size, self.hidden_size)
 
     if enc_attn:
       self.enc_bilinear = nn.Bilinear(self.hidden_size, self.hidden_size, 1)
@@ -74,19 +83,28 @@ class DecoderRNN(nn.Module):
 class Seq2Seq(nn.Module):
 
   def __init__(self, vocab, embed_size, hidden_size, max_input_length, max_output_length,
-               enc_attn=True, dec_attn=True):
+               enc_bidi=True, enc_attn=True, dec_attn=True):
     super(Seq2Seq, self).__init__()
     self.SOS = vocab.SOS
     self.vocab_size = len(vocab)
-    self.embed_size = embed_size
+    if vocab.embeddings is not None:
+      self.embed_size = vocab.embeddings.shape[1]
+      if embed_size is not None and self.embed_size != embed_size:
+        print("Warning: Embedding size %d is overriden by %d." % (embed_size, self.embed_size))
+      embedding_weights = torch.from_numpy(vocab.embeddings)
+    else:
+      self.embed_size = embed_size
+      embedding_weights = None
     self.max_input_length = max_input_length
     self.max_output_length = max_output_length
     self.enc_attn = enc_attn
     self.dec_attn = dec_attn
 
-    self.embedding = nn.Embedding(self.vocab_size, embed_size)
-    self.encoder = EncoderRNN(embed_size, hidden_size)
-    self.decoder = DecoderRNN(self.vocab_size, hidden_size, enc_attn, dec_attn)
+    self.embedding = nn.Embedding(self.vocab_size, self.embed_size, padding_idx=vocab.PAD,
+                                  _weight=embedding_weights)
+    self.encoder = EncoderRNN(self.embed_size, hidden_size, enc_bidi)
+    self.decoder = DecoderRNN(self.vocab_size, self.embed_size,
+                              hidden_size * 2 if enc_bidi else hidden_size, enc_attn, dec_attn)
 
   def forward(self, input_tensor, target_tensor=None, input_lengths=None, criterion=None,
               teacher_forcing_ratio=0.5):

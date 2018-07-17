@@ -1,3 +1,5 @@
+import os
+import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 from typing import NamedTuple, List, Callable
@@ -15,12 +17,12 @@ class Vocab(object):
   EOS = 2
   UNK = 3
 
-  def __init__(self, name: str):
-    self.name = name
+  def __init__(self):
     self.word2index = {}
     self.word2count = Counter()
     self.reserved = ['<PAD>', '<SOS>', '<EOS>', '<UNK>']
     self.index2word = self.reserved[:]
+    self.embeddings = None
 
   def add_words(self, words: List[str]):
     for word in words:
@@ -43,6 +45,24 @@ class Vocab(object):
       self.word2index[word] = len(self.index2word)
       self.word2count[word] = count
       self.index2word.append(word)
+
+  def load_embeddings(self, file_path: str, dtype=np.float32) -> int:
+    num_embeddings = 0
+    vocab_size = len(self)
+    with open(file_path, 'rb') as f:
+      for line in f:
+        line = line.split()
+        word = line[0].decode('utf-8')
+        idx = self.word2index.get(word)
+        if idx is not None:
+          vec = np.array(line[1:], dtype=dtype)
+          if self.embeddings is None:
+            n_dims = len(vec)
+            self.embeddings = np.random.normal(np.zeros((vocab_size, n_dims))).astype(dtype)
+            self.embeddings[self.PAD] = np.zeros(n_dims)
+          self.embeddings[idx] = vec
+          num_embeddings += 1
+    return num_embeddings
 
   def __getitem__(self, item):
     if type(item) is int:
@@ -77,6 +97,7 @@ class Dataset(object):
   def __init__(self, filename: str, tokenize: Callable=simple_tokenizer, max_src_len: int=None,
                max_tgt_len: int=None):
     print("Reading dataset %s..." % filename, end=' ', flush=True)
+    self.filename = filename
     self.pairs = []
     self.src_len = 0
     self.tgt_len = 0
@@ -97,17 +118,33 @@ class Dataset(object):
         self.pairs.append(Example(src, tgt, src_len, tgt_len))
     print("%d pairs." % len(self.pairs))
 
-  def build_vocab(self, lang_name: str, vocab_size: int=None, src: bool=True, tgt: bool=False)\
-          -> Vocab:
-    print("Building vocabulary %s..." % lang_name, end=' ', flush=True)
-    vocab = Vocab(lang_name)
-    for example in self.pairs:
-      if src:
-        vocab.add_words(example.src)
-      if tgt:
-        vocab.add_words(example.tgt)
-    vocab.trim(vocab_size=vocab_size)
-    print("%d words." % len(vocab))
+  def build_vocab(self, vocab_size: int=None, src: bool=True, tgt: bool=True,
+                  embed_file: str=None) -> Vocab:
+    filename, _ = os.path.splitext(self.filename)
+    if vocab_size:
+      filename += ".%d" % vocab_size
+    filename += '.vocab'
+    if os.path.isfile(filename):
+      vocab = torch.load(filename)
+      if vocab.embeddings is None:
+        print("Vocabulary loaded, %d words." % len(vocab))
+      else:
+        print("Vocabulary with pre-trained embeddings loaded, %d words." % len(vocab))
+    else:
+      print("Building vocabulary...", end=' ', flush=True)
+      vocab = Vocab()
+      for example in self.pairs:
+        if src:
+          vocab.add_words(example.src)
+        if tgt:
+          vocab.add_words(example.tgt)
+      vocab.trim(vocab_size=vocab_size)
+      if embed_file:
+        count = vocab.load_embeddings(embed_file)
+        print("%d words, %d pre-trained embeddings." % (len(vocab), count))
+      else:
+        print("%d words." % len(vocab))
+      torch.save(vocab, filename)
     return vocab
 
   def generator(self, batch_size: int, src_vocab: Vocab=None, tgt_vocab: Vocab=None):
@@ -146,12 +183,12 @@ class Dataset(object):
         yield examples
 
 
-def show_plot(points, file_prefix=None):
+def show_plot(points, step=1, file_prefix=None):
   plt.figure()
   fig, ax = plt.subplots()
   # this locator puts ticks at regular intervals
   loc = ticker.MultipleLocator(base=0.2)
   ax.yaxis.set_major_locator(loc)
-  plt.plot(points)
+  plt.plot(range(step, len(points)*step + 1, step), points)
   if file_prefix:
     plt.savefig(file_prefix + '.png')

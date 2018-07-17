@@ -23,11 +23,12 @@ if __name__ == "__main__":
   import matplotlib.pyplot as plt
 
   dataset = Dataset(data_path, max_src_len=80, max_tgt_len=25)
-  vocabulary = dataset.build_vocab('english', vocab_size, True, True)
+  vocabulary = dataset.build_vocab(vocab_size)
   test_data = dataset.generator(1, vocabulary)
-  m = Seq2Seq(vocabulary, embed_size, hidden_size, dataset.src_len, dataset.tgt_len)
+  m = Seq2Seq(vocabulary, embed_size, hidden_size, dataset.src_len, dataset.tgt_len,
+              enc_bidi=encoder_bidi, enc_attn=encoder_attn)
 
-  saved_model = torch.load(model_path)
+  saved_model = torch.load(model_path_prefix + '.11.pt', map_location=lambda storage, loc: storage)
   m.load_state_dict(saved_model)
 
   examples, src_tensor, lengths = next(test_data)
