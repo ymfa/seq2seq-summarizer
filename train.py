@@ -3,17 +3,20 @@ import torch.nn as nn
 import math
 from torch import optim
 from tqdm import tqdm
-from utils import Dataset, show_plot
+from utils import Dataset, show_plot, Vocab
 from model import Seq2Seq, DEVICE
+from params import Params
 
 
-def train_batch(batch, model, optimizer, criterion, pack_seq=True):
+def train_batch(batch, model, optimizer, criterion, *, pack_seq=True, forcing_ratio=0.5,
+                partial_forcing=True):
   _, input_tensor, target_tensor, input_lengths = batch
   if not pack_seq:
     input_lengths = None
 
   optimizer.zero_grad()
-  loss = model(input_tensor.to(DEVICE), target_tensor.to(DEVICE), input_lengths, criterion)
+  loss = model(input_tensor.to(DEVICE), target_tensor.to(DEVICE), input_lengths, criterion,
+               forcing_ratio=forcing_ratio, partial_forcing=partial_forcing)
   loss.backward()
   optimizer.step()
 
@@ -21,25 +24,29 @@ def train_batch(batch, model, optimizer, criterion, pack_seq=True):
   return loss.item() / target_length
 
 
-def train(generator, vocab, model, n_batches=100, n_epochs=5, *, lr=0.001, pack_seq=True,
-          auto_save_prefix=None):
-  plot_points_per_epoch = max(math.log(n_batches, 1.6), 1.)
-  plot_every = round(n_batches / plot_points_per_epoch)
+def train(generator, vocab: Vocab, model: Seq2Seq, params: Params):
+  plot_points_per_epoch = max(math.log(params.n_batches, 1.6), 1.)
+  plot_every = round(params.n_batches / plot_points_per_epoch)
   plot_losses, cached_losses = [], []
   total_batch_count = 0
 
+  total_parameters = sum(parameter.numel() for parameter in model.parameters()
+                         if parameter.requires_grad)
+  print("Training %d trainable parameters..." % total_parameters)
   model.to(DEVICE)
   model.train()
-  optimizer = optim.Adam(model.parameters(), lr=lr)
+  optimizer = optim.Adam(model.parameters(), lr=params.lr)
   criterion = nn.NLLLoss(ignore_index=vocab.PAD)
 
-  for epoch_count in range(1, n_epochs + 1):
+  for epoch_count in range(1, params.n_epochs + 1):
     epoch_loss = 0
-    prog_bar = tqdm(range(1, n_batches + 1), desc='Epoch %d' % epoch_count)
+    prog_bar = tqdm(range(1, params.n_batches + 1), desc='Epoch %d' % epoch_count)
 
     for batch_count in prog_bar:
       batch = next(generator)
-      loss = train_batch(batch, model, optimizer, criterion, pack_seq)
+      loss = train_batch(batch, model, optimizer, criterion, pack_seq=params.pack_seq,
+                         forcing_ratio=params.forcing_ratio,
+                         partial_forcing=params.partial_forcing)
 
       epoch_loss += float(loss)
       epoch_avg_loss = epoch_loss / batch_count
@@ -51,23 +58,27 @@ def train(generator, vocab, model, n_batches=100, n_epochs=5, *, lr=0.001, pack_
         plot_losses.append(period_avg_loss)
         cached_losses = []
 
-    if auto_save_prefix:
-      filename = '%s.%02d.pt' % (auto_save_prefix, epoch_count)
-      torch.save(model.state_dict(), filename)
+    if params.model_path_prefix:
+      filename = '%s.%02d.pt' % (params.model_path_prefix, epoch_count)
+      torch.save(model, filename)
+      torch.save({
+        'epoch': epoch_count,
+        'epoch_avg_loss': epoch_avg_loss,
+        'params': params,
+        'optimizer': optimizer
+      }, '%s.train.pt' % params.model_path_prefix)
 
-    total_batch_count += n_batches
+    total_batch_count += params.n_batches
 
-  show_plot(plot_losses, plot_every, auto_save_prefix)
+  show_plot(plot_losses, plot_every, params.model_path_prefix)
 
 
 if __name__ == "__main__":
-  from params import *
+  p = Params()
 
-  dataset = Dataset(data_path, max_src_len=80, max_tgt_len=25)
-  vocabulary = dataset.build_vocab(vocab_size, embed_file=embed_file)
-  training_data = dataset.generator(batch_size, vocabulary, vocabulary)
-  m = Seq2Seq(vocabulary, embed_size, hidden_size, dataset.src_len, dataset.tgt_len,
-              enc_bidi=encoder_bidi, enc_attn=encoder_attn)
+  dataset = Dataset(p.data_path, max_src_len=p.max_src_len, max_tgt_len=p.max_tgt_len)
+  v = dataset.build_vocab(p.vocab_size, embed_file=p.embed_file)
+  m = Seq2Seq(v, p)
 
-  train(training_data, vocabulary, m, n_batches=num_batches, n_epochs=num_epochs, lr=learning_rate,
-        pack_seq=use_packed_seq, auto_save_prefix=model_path_prefix)
+  training_data = dataset.generator(p.batch_size, v, v)
+  train(training_data, v, m, p)

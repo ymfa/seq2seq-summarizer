@@ -14,27 +14,3 @@ def evaluate(vocab, model, input_tensor):
     decoded_sentence = ' '.join(decoded_sentence)
     decoder_attentions = decoder_attentions[:i+1, 0, :]
   return decoded_sentence, decoder_attentions
-
-
-if __name__ == "__main__":
-  from utils import Dataset
-  from model import Seq2Seq
-  from params import *
-  import matplotlib.pyplot as plt
-
-  dataset = Dataset(data_path, max_src_len=80, max_tgt_len=25)
-  vocabulary = dataset.build_vocab(vocab_size)
-  test_data = dataset.generator(1, vocabulary)
-  m = Seq2Seq(vocabulary, embed_size, hidden_size, dataset.src_len, dataset.tgt_len,
-              enc_bidi=encoder_bidi, enc_attn=encoder_attn)
-
-  saved_model = torch.load(model_path_prefix + '.11.pt', map_location=lambda storage, loc: storage)
-  m.load_state_dict(saved_model)
-
-  examples, src_tensor, lengths = next(test_data)
-  print(examples[0])
-
-  pred, attention = evaluate(vocabulary, m, src_tensor)
-  print(pred)
-  plt.matshow(attention.numpy())
-  plt.show()
