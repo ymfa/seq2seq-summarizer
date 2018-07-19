@@ -18,6 +18,15 @@ class EncoderRNN(nn.Module):
     self.gru = nn.GRU(embed_size, hidden_size, bidirectional=bidi, dropout=rnn_drop)
 
   def forward(self, embedded, hidden, input_lengths=None):
+    """
+    :param embedded: (src seq len, batch size, embed size)
+    :param hidden: (num directions, batch size, encoder hidden size)
+    :param input_lengths: list containing the non-padded length of each sequence in this batch;
+                          if set, we use `PackedSequence` to skip the PAD inputs and leave the
+                          corresponding encoder states as zeros
+    :return: (src seq len, batch size, hidden size * num directions = decoder hidden size)
+    Perform multi-step encoding.
+    """
     if input_lengths is not None:
       embedded = pack_padded_sequence(embedded, input_lengths)
 
@@ -80,7 +89,21 @@ class DecoderRNN(nn.Module):
       self.out.weight = tied_embedding.weight
 
   def forward(self, embedded, hidden, encoder_states=None, *, encoder_word_idx=None,
-              ext_vocab_size=None):
+              ext_vocab_size: int=None):
+    """
+    :param embedded: (batch size, embed size)
+    :param hidden: (1, batch size, decoder hidden size)
+    :param encoder_states: (src seq len, batch size, decoder hidden size), for attention mechanism
+    :param encoder_word_idx: (src seq len, batch size), for pointer network
+    :param ext_vocab_size: the dynamic vocab size, determined by the max num of OOV words contained
+                           in any src seq in this batch, for pointer network
+    :return: tuple of four things:
+             1. log word prob, (batch size, dynamic vocab size);
+             2. RNN hidden state after this step, (1, batch size, decoder hidden size);
+             3. attention weights over encoder states, (batch size, src seq len, 1);
+             4. prob of copying by pointing as opposed to generating, (batch size, 1)
+    Perform single-step decoding.
+    """
     batch_size = embedded.size(0)
     combined = torch.zeros(batch_size, self.combined_size, device=DEVICE)
 
@@ -133,6 +156,15 @@ class DecoderRNN(nn.Module):
 class Seq2Seq(nn.Module):
 
   def __init__(self, vocab: Vocab, params: Params, max_output_length=None):
+    """
+    :param vocab: only for accessing vocab info (special tokens and vocab size)
+    :param params: model hyper-parameters
+    :param max_output_length: max num of decoder steps if not hitting SOS (only effective at test
+                              time, as during training the num of steps is determined by the
+                              `target_tensor`); it is safe to change `self.max_output_length` as
+                              it network architecture is independent of src/tgt seq lengths
+    Create the seq2seq model; its encoder and decoder will be created automatically.
+    """
     super(Seq2Seq, self).__init__()
     self.SOS = vocab.SOS
     self.UNK = vocab.UNK
@@ -165,6 +197,7 @@ class Seq2Seq(nn.Module):
                               out_drop=params.dec_out_dropout)
 
   def filter_oov(self, tensor, ext_vocab_size):
+    """Replace any OOV index in `tensor` with UNK"""
     if ext_vocab_size and ext_vocab_size > self.vocab_size:
       result = tensor.clone()
       result[tensor >= self.vocab_size] = self.UNK
@@ -173,6 +206,20 @@ class Seq2Seq(nn.Module):
 
   def forward(self, input_tensor, target_tensor=None, input_lengths=None, criterion=None, *,
               forcing_ratio=0.5, partial_forcing=True, ext_vocab_size=None):
+    """
+    :param input_tensor: tensor of word indices, (src seq len, batch size)
+    :param target_tensor: tensor of word indices, (tgt seq len, batch size)
+    :param input_lengths: see explanation in `EncoderRNN`
+    :param criterion: the loss function; if set, we are in training mode
+    :param forcing_ratio: see explanation in `Params` (training mode only)
+    :param partial_forcing: see explanation in `Params` (training mode only)
+    :param ext_vocab_size: see explanation in `DecoderRNN`
+    :return: in training mode, only the loss; in testing mode, a tuple of three things:
+             1. list of decoded sentences (each sentence is a list of word indices);
+             2. attention weights for visualization, (out seq len, batch size, src seq len);
+             3. pointer weights for visualization, (out seq len, batch size)
+    Run the seq2seq model for training or testing.
+    """
     input_length = input_tensor.size(0)
     batch_size = input_tensor.size(1)
 
