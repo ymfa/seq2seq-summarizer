@@ -79,7 +79,7 @@ if __name__ == "__main__":
 
   dataset = Dataset(p.data_path, max_src_len=p.max_src_len, max_tgt_len=p.max_tgt_len)
   v = dataset.build_vocab(p.vocab_size, embed_file=p.embed_file)
-  m = Seq2Seq(v, p)
+  m = Seq2Seq(v, p, dataset.tgt_len)
 
   training_data = dataset.generator(p.batch_size, v, v, True if p.pointer else False)
   train(training_data, v, m, p)

@@ -132,7 +132,7 @@ class DecoderRNN(nn.Module):
 
 class Seq2Seq(nn.Module):
 
-  def __init__(self, vocab: Vocab, params: Params):
+  def __init__(self, vocab: Vocab, params: Params, max_output_length=None):
     super(Seq2Seq, self).__init__()
     self.SOS = vocab.SOS
     self.UNK = vocab.UNK
@@ -146,8 +146,8 @@ class Seq2Seq(nn.Module):
     else:
       self.embed_size = params.embed_size
       embedding_weights = None
-    self.max_input_length = params.max_src_len
-    self.max_output_length = params.max_tgt_len
+    self.max_output_length = \
+      params.max_tgt_len + 1 if max_output_length is None else max_output_length
     self.enc_attn = params.enc_attn
     self.dec_attn = params.dec_attn
 
