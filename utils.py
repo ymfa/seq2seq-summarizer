@@ -212,3 +212,22 @@ def show_plot(points, step=1, file_prefix=None):
   plt.plot(range(step, len(points)*step + 1, step), points)
   if file_prefix:
     plt.savefig(file_prefix + '.png')
+
+
+def show_attention_map(src_words, pred_words, attention, pointer_ratio=None):
+  fig, ax = plt.subplots(figsize=(16, 4))
+  im = plt.pcolormesh(np.flipud(attention), cmap="GnBu")
+  # set ticks and labels
+  ax.set_xticks(np.arange(len(src_words)) + 0.5)
+  ax.set_xticklabels(src_words, fontsize=14)
+  ax.set_yticks(np.arange(len(pred_words)) + 0.5)
+  ax.set_yticklabels(reversed(pred_words), fontsize=14)
+  if pointer_ratio is not None:
+    ax1 = ax.twinx()
+    ax1.set_yticks(np.concatenate([np.arange(0.5, len(pred_words)), [len(pred_words)]]))
+    ax1.set_yticklabels('%.3f' % v for v in np.flipud(pointer_ratio))
+    ax1.set_ylabel('Copy probability', rotation=-90, va="bottom")
+  # let the horizontal axes labelling appear on top
+  ax.tick_params(top=True, bottom=False, labeltop=True, labelbottom=False)
+  # rotate the tick labels and set their alignment
+  plt.setp(ax.get_xticklabels(), rotation=-45, ha="right", rotation_mode="anchor")

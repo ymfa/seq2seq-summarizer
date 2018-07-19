@@ -89,7 +89,7 @@ class DecoderRNN(nn.Module):
     output, hidden = self.gru(embedded.unsqueeze(0), hidden)  # unsqueeze and squeeze are necessary
     combined[:, :self.hidden_size] = output.squeeze(0)        # as RNN expects a 3D tensor (step=1)
     offset = self.hidden_size
-    enc_attn = None
+    enc_attn, prob_ptr = None, None  # for visualization
 
     if self.enc_attn or self.pointer:
       # energy and attention: (num encoder states, batch size, 1)
@@ -127,7 +127,7 @@ class DecoderRNN(nn.Module):
     else:
       output = F.log_softmax(logits, dim=1)
 
-    return output, hidden, enc_attn
+    return output, hidden, enc_attn, prob_ptr
 
 
 class Seq2Seq(nn.Module):
@@ -150,6 +150,7 @@ class Seq2Seq(nn.Module):
       params.max_tgt_len + 1 if max_output_length is None else max_output_length
     self.enc_attn = params.enc_attn
     self.dec_attn = params.dec_attn
+    self.pointer = params.pointer
 
     self.embedding = nn.Embedding(self.vocab_size, self.embed_size, padding_idx=vocab.PAD,
                                   _weight=embedding_weights)
@@ -196,17 +197,18 @@ class Seq2Seq(nn.Module):
     else:  # testing: decode tokens
       decoded_tokens = [[] for _ in range(batch_size)]
       use_teacher_forcing = False
-      if self.enc_attn:
+      enc_attn_weights, ptr_probs = None, None  # for visualization
+      if self.enc_attn or self.pointer:
         enc_attn_weights = torch.zeros(target_length, batch_size, input_length)
-      else:
-        enc_attn_weights = None
+        if self.pointer:
+          ptr_probs = torch.zeros(target_length, batch_size)
 
     decoder_input = torch.tensor([self.SOS] * batch_size, device=DEVICE)
     decoder_hidden = encoder_hidden
 
     for di in range(target_length):
       decoder_embedded = self.embedding(self.filter_oov(decoder_input, ext_vocab_size))
-      decoder_output, decoder_hidden, dec_enc_attn = \
+      decoder_output, decoder_hidden, dec_enc_attn, dec_prob_ptr = \
         self.decoder(decoder_embedded, decoder_hidden, encoder_outputs,
                      encoder_word_idx=input_tensor, ext_vocab_size=ext_vocab_size)
       if criterion:
@@ -219,8 +221,10 @@ class Seq2Seq(nn.Module):
         if not criterion:
           for bi in range(batch_size):
             decoded_tokens[bi].append(topi[bi].item())
-          if self.enc_attn:
-            enc_attn_weights[di] = dec_enc_attn.squeeze(2).transpose(0, 1).data
+          if self.enc_attn or self.pointer:
+            enc_attn_weights[di] = dec_enc_attn.squeeze(2).data
+            if self.pointer:
+              ptr_probs[di] = dec_prob_ptr.squeeze(1).data
         decoder_input = topi.detach()  # detach from history as input
         #if decoder_input.item() == EOS: break
     
@@ -229,4 +233,4 @@ class Seq2Seq(nn.Module):
     else:
       #if enc_attn_weights is not None:
       #  enc_attn_weights = enc_attn_weights[:di + 1]
-      return decoded_tokens, enc_attn_weights
+      return decoded_tokens, enc_attn_weights, ptr_probs
