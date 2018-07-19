@@ -10,13 +10,14 @@ from params import Params
 
 def train_batch(batch, model, optimizer, criterion, *, pack_seq=True, forcing_ratio=0.5,
                 partial_forcing=True):
-  _, input_tensor, target_tensor, input_lengths = batch
+  _, input_tensor, target_tensor, input_lengths, oov_dict = batch
   if not pack_seq:
     input_lengths = None
 
   optimizer.zero_grad()
   loss = model(input_tensor.to(DEVICE), target_tensor.to(DEVICE), input_lengths, criterion,
-               forcing_ratio=forcing_ratio, partial_forcing=partial_forcing)
+               forcing_ratio=forcing_ratio, partial_forcing=partial_forcing,
+               ext_vocab_size=oov_dict['size'] if oov_dict is not None else None)
   loss.backward()
   optimizer.step()
 
@@ -80,5 +81,5 @@ if __name__ == "__main__":
   v = dataset.build_vocab(p.vocab_size, embed_file=p.embed_file)
   m = Seq2Seq(v, p)
 
-  training_data = dataset.generator(p.batch_size, v, v)
+  training_data = dataset.generator(p.batch_size, v, v, True if p.pointer else False)
   train(training_data, v, m, p)

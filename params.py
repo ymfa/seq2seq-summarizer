@@ -8,6 +8,7 @@ class Params:
   enc_bidi: bool = True
   enc_attn: bool = True  # decoder has attention over encoder states?
   dec_attn: bool = True  # (not yet implemented)
+  pointer: bool = True  # use pointer network (copy mechanism) in addition to word generator?
   out_embed_size: Optional[int] = None  # if set, use an additional layer before decoder output
   tie_embed: bool = True  # tie the decoder output layer to the input embedding layer?
 
@@ -32,4 +33,4 @@ class Params:
   max_src_len: int = 80
   max_tgt_len: int = 25
 
-  model_path_prefix: str = 'checkpoints/short_bi_tied'
+  model_path_prefix: str = 'checkpoints/short_bi_tied_ptr'

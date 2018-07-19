@@ -147,8 +147,12 @@ class Dataset(object):
       torch.save(vocab, filename)
     return vocab
 
-  def generator(self, batch_size: int, src_vocab: Vocab=None, tgt_vocab: Vocab=None):
+  def generator(self, batch_size: int, src_vocab: Vocab=None, tgt_vocab: Vocab=None,
+                ext_vocab: bool=False):
     ptr = len(self.pairs)  # make sure to shuffle at first run
+    if ext_vocab:
+      assert src_vocab is not None
+      base_oov_idx = len(src_vocab)
     while True:
       if ptr + batch_size > len(self.pairs):
         shuffle(self.pairs)  # shuffle inplace to save memory
@@ -156,29 +160,45 @@ class Dataset(object):
       examples = self.pairs[ptr:ptr + batch_size]
       ptr += batch_size
       if src_vocab or tgt_vocab:
+        src_tensor, tgt_tensor = None, None
+        lengths, oov_dict = None, None
+        # initialize tensors
         if src_vocab:
           examples.sort(key=lambda x: -x.src_len)
           lengths = [x.src_len for x in examples]
           max_src_len = lengths[0]
           src_tensor = torch.zeros(max_src_len, batch_size, dtype=torch.long)
+          if ext_vocab:
+            oov_dict = {}
+            ext_vocab_size = base_oov_idx
         if tgt_vocab:
           max_tgt_len = max(x.tgt_len for x in examples)
           tgt_tensor = torch.zeros(max_tgt_len, batch_size, dtype=torch.long)
+        # fill up tensors by word indices
         for i, example in enumerate(examples):
           if src_vocab:
+            if ext_vocab:
+              next_oov_idx = base_oov_idx  # reset oov index for each example in a batch
             for j, word in enumerate(example.src):
-              src_tensor[j, i] = src_vocab[word]
+              idx = src_vocab[word]
+              if ext_vocab and idx == src_vocab.UNK:
+                idx = next_oov_idx
+                oov_dict[(i, word)] = idx
+                next_oov_idx += 1
+              src_tensor[j, i] = idx
             src_tensor[example.src_len - 1, i] = src_vocab.EOS
           if tgt_vocab:
             for j, word in enumerate(example.tgt):
-              tgt_tensor[j, i] = tgt_vocab[word]
+              idx = tgt_vocab[word]
+              if ext_vocab and idx == src_vocab.UNK:
+                idx = oov_dict.get((i, word), idx)
+              tgt_tensor[j, i] = idx
             tgt_tensor[example.tgt_len - 1, i] = tgt_vocab.EOS
-        if src_vocab and tgt_vocab:
-          yield examples, src_tensor, tgt_tensor, lengths
-        elif src_vocab:
-          yield examples, src_tensor, lengths
-        else:
-          yield examples, tgt_tensor
+          if ext_vocab:
+            ext_vocab_size = max(ext_vocab_size, next_oov_idx)
+        if ext_vocab:
+          oov_dict['size'] = ext_vocab_size
+        yield examples, src_tensor, tgt_tensor, lengths, oov_dict
       else:
         yield examples
 
