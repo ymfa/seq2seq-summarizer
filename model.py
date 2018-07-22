@@ -205,19 +205,19 @@ class Seq2Seq(nn.Module):
     return tensor
 
   def forward(self, input_tensor, target_tensor=None, input_lengths=None, criterion=None, *,
-              forcing_ratio=0.5, partial_forcing=True, ext_vocab_size=None):
+              forcing_ratio=0, partial_forcing=True, ext_vocab_size=None):
     """
     :param input_tensor: tensor of word indices, (src seq len, batch size)
     :param target_tensor: tensor of word indices, (tgt seq len, batch size)
     :param input_lengths: see explanation in `EncoderRNN`
-    :param criterion: the loss function; if set, we are in training mode
+    :param criterion: the loss function
     :param forcing_ratio: see explanation in `Params` (training mode only)
     :param partial_forcing: see explanation in `Params` (training mode only)
     :param ext_vocab_size: see explanation in `DecoderRNN`
-    :return: in training mode, only the loss; in testing mode, a tuple of three things:
-             1. list of decoded sentences (each sentence is a list of word indices);
-             2. attention weights for visualization, (out seq len, batch size, src seq len);
-             3. pointer weights for visualization, (out seq len, batch size)
+    :return: list of decoded sentences (each sentence is a list of word indices); and if
+             `criterion` is set, the loss; otherwise a tuple for visualization containing:
+             1. attention weights, (out seq len, batch size, src seq len);
+             2. pointer weights, (out seq len, batch size)
     Run the seq2seq model for training or testing.
     """
     input_length = input_tensor.size(0)
@@ -235,16 +235,20 @@ class Seq2Seq(nn.Module):
     else:
       target_length = target_tensor.size(0)
 
-    if criterion:  # training: compute loss
-      loss = 0
+    if forcing_ratio > 0:
       if partial_forcing:
         use_teacher_forcing = None  # decide later individually in each step
       else:
         use_teacher_forcing = random.random() < forcing_ratio
-    else:  # testing: decode tokens
-      decoded_tokens = [[] for _ in range(batch_size)]
+    else:
       use_teacher_forcing = False
-      enc_attn_weights, ptr_probs = None, None  # for visualization
+
+    decoded_tokens = torch.zeros(batch_size, target_length)
+
+    if criterion:
+      loss = 0
+    else:
+      enc_attn_weights, ptr_probs = None, None
       if self.enc_attn or self.pointer:
         enc_attn_weights = torch.zeros(target_length, batch_size, input_length)
         if self.pointer:
@@ -258,26 +262,24 @@ class Seq2Seq(nn.Module):
       decoder_output, decoder_hidden, dec_enc_attn, dec_prob_ptr = \
         self.decoder(decoder_embedded, decoder_hidden, encoder_outputs,
                      encoder_word_idx=input_tensor, ext_vocab_size=ext_vocab_size)
+      # save the decoded tokens
+      _, topi = decoder_output.data.topk(1)  # topi shape: (batch size, k=1)
+      topi = topi.squeeze(1)
+      decoded_tokens[:, di] = topi
+      # compute additional outputs
       if criterion:
         loss += criterion(decoder_output, target_tensor[di])
+      elif self.enc_attn or self.pointer:
+        enc_attn_weights[di] = dec_enc_attn.squeeze(2).data
+        if self.pointer:
+          ptr_probs[di] = dec_prob_ptr.squeeze(1).data
+      # decide the next input
       if use_teacher_forcing or (use_teacher_forcing is None and random.random() < forcing_ratio):
         decoder_input = target_tensor[di]  # teacher forcing
       else:
-        _, topi = decoder_output.data.topk(1)  # topi shape: (batch size, k=1)
-        topi = topi.squeeze(1)
-        if not criterion:
-          for bi in range(batch_size):
-            decoded_tokens[bi].append(topi[bi].item())
-          if self.enc_attn or self.pointer:
-            enc_attn_weights[di] = dec_enc_attn.squeeze(2).data
-            if self.pointer:
-              ptr_probs[di] = dec_prob_ptr.squeeze(1).data
         decoder_input = topi.detach()  # detach from history as input
-        #if decoder_input.item() == EOS: break
     
     if criterion:
-      return loss
+      return decoded_tokens, loss
     else:
-      #if enc_attn_weights is not None:
-      #  enc_attn_weights = enc_attn_weights[:di + 1]
-      return decoded_tokens, enc_attn_weights, ptr_probs
+      return decoded_tokens, (enc_attn_weights, ptr_probs)

@@ -1,8 +1,12 @@
 import os
+import re
+from tempfile import TemporaryDirectory
+import subprocess
+from multiprocessing.dummy import Pool
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
-from typing import NamedTuple, List, Callable
+from typing import NamedTuple, List, Callable, Dict, Tuple
 from collections import Counter
 from random import shuffle
 import torch
@@ -80,16 +84,13 @@ class Example(NamedTuple):
   tgt_len: int
 
 
-def simple_tokenizer(text: str, lower: bool=False, paragraph_break: str=None) -> List[str]:
-  all_tokens = []
-  for p in text.split('\n'):
-    if len(all_tokens) > 0 and paragraph_break:
-      all_tokens.append(paragraph_break)
-    tokens = p.split()
-    if lower:
-      tokens = [t.lower() for t in tokens]
-    all_tokens.extend(tokens)
-  return all_tokens
+def simple_tokenizer(text: str, lower: bool=False, newline: str=None) -> List[str]:
+  """Split an already tokenized input `text`."""
+  if lower:
+    text = text.lower()
+  if newline is not None:  # replace newline by a token
+    text = text.replace('\n', ' ' + newline + ' ')
+  return text.split()
 
 
 class Dataset(object):
@@ -203,13 +204,21 @@ class Dataset(object):
         yield examples
 
 
-def show_plot(points, step=1, file_prefix=None):
+def show_plot(loss, step=1, val_loss=None, val_metric=None, val_step=1, file_prefix=None):
   plt.figure()
-  fig, ax = plt.subplots()
+  fig, ax = plt.subplots(figsize=(12, 8))
   # this locator puts ticks at regular intervals
   loc = ticker.MultipleLocator(base=0.2)
   ax.yaxis.set_major_locator(loc)
-  plt.plot(range(step, len(points)*step + 1, step), points)
+  ax.set_ylabel('Loss', color='b')
+  ax.set_xlabel('Batch')
+  plt.plot(range(step, len(loss) * step + 1, step), loss, 'b')
+  if val_loss:
+    plt.plot(range(val_step, len(val_loss) * val_step + 1, val_step), val_loss, 'g')
+  if val_metric:
+    ax2 = ax.twinx()
+    ax2.plot(range(val_step, len(val_metric) * val_step + 1, val_step), val_metric, 'r')
+    ax2.set_ylabel('ROUGE', color='r')
   if file_prefix:
     plt.savefig(file_prefix + '.png')
 
@@ -231,3 +240,84 @@ def show_attention_map(src_words, pred_words, attention, pointer_ratio=None):
   ax.tick_params(top=True, bottom=False, labeltop=True, labelbottom=False)
   # rotate the tick labels and set their alignment
   plt.setp(ax.get_xticklabels(), rotation=-45, ha="right", rotation_mode="anchor")
+
+
+non_word_char_in_word = re.compile(r"(?<=\w)\W(?=\w)")
+
+not_for_output = {'<PAD>', '<SOS>', '<EOS>', '<UNK>'}
+
+def tokens_to_rouge_output(tokens: List[str], newline: str=None) -> str:
+  """Join output `tokens` for ROUGE evaluation."""
+  tokens = filter(lambda t: t not in not_for_output, tokens)
+  tokens = [non_word_char_in_word.sub("", t) for t in tokens]  # "n't" => "nt"
+  if newline is None:
+    s = ' '.join(tokens)
+  else:  # replace newline tokens by newlines
+    s = ' ' + ' '.join(tokens) + ' '
+    s = s.replace(' ' + newline + ' ', '\n').strip(' ')
+  return s
+
+
+this_dir = os.path.dirname(os.path.abspath(__file__))
+
+rouge_pattern = re.compile(rb"seq2seq ROUGE-(.+) Average_([RPF]): ([\d.]+) "
+                           rb"\(95%-conf\.int\. ([\d.]+) - ([\d.]+)\)")
+
+def rouge(pred_docs: List[List[str]], tgt_docs: List[List[str]]) -> Dict[str, float]:
+  """Perform single-reference ROUGE evaluation on docs and return an average score."""
+  results = {}  # e.g. 'su4_f' => 0.35
+  with TemporaryDirectory() as folder:  # on my server, /tmp is a RAM disk
+    # write SPL files
+    eval_entries = []
+    for i, (pred_tokens, tgt_tokens) in enumerate(zip(pred_docs, tgt_docs)):
+      sys_file = 'sys_%d.spl' % i
+      with open(os.path.join(folder, sys_file), 'wt') as f:
+        f.write(tokens_to_rouge_output(pred_tokens))
+      ref_file = 'ref_%d.spl' % i
+      with open(os.path.join(folder, ref_file), 'wt') as f:
+        f.write(tokens_to_rouge_output(tgt_tokens))
+      eval_entry = """
+<EVAL ID="{1}">
+  <PEER-ROOT>{0}</PEER-ROOT>
+  <MODEL-ROOT>{0}</MODEL-ROOT>
+  <INPUT-FORMAT TYPE="SPL"></INPUT-FORMAT>
+  <PEERS>
+    <P ID="seq2seq">{2}</P>
+  </PEERS>
+  <MODELS>
+    <M ID="A">{3}</M>
+  </MODELS>
+</EVAL>""".format(folder, i, sys_file, ref_file)
+      eval_entries.append(eval_entry)
+    # write config file
+    xml = '<ROUGE-EVAL version="1.0">{0}\n</ROUGE-EVAL>'.format("".join(eval_entries))
+    config_path = os.path.join(folder, 'task.xml')
+    with open(config_path, 'wt') as f:
+      f.write(xml)
+    # run ROUGE
+    out = subprocess.check_output('./ROUGE-1.5.5.pl -e data -a -n 2 -2 4 -u ' + config_path,
+                                  shell=True, cwd=os.path.join(this_dir, 'data'))
+  # parse ROUGE output
+  for line in out.split(b'\n'):
+    match = rouge_pattern.match(line)
+    if match:
+      metric, rpf, value, low, high = match.groups()
+      results[(metric + b'_' + rpf).decode('utf-8').lower()] = float(value)
+  return results
+
+
+def rouge_single(example: Tuple[List[str], List[str]]) -> Dict[str, float]:
+  """Helper for `rouge_parallel()`."""
+  pred_doc, tgt_doc = example
+  return rouge([pred_doc], [tgt_doc])
+
+
+def rouge_parallel(pred_docs: List[List[str]], tgt_docs: List[List[str]]) \
+        -> List[Dict[str, float]]:
+  """
+  Run ROUGE tests in parallel (by Python multi-threading, i.e. multiprocessing.dummy) to obtain
+  per-document scores. Depending on batch size and hardware, this may be slower or faster than
+  `rouge()`.
+  """
+  with Pool() as p:
+    return p.map(rouge_single, zip(pred_docs, tgt_docs))
