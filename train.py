@@ -17,14 +17,14 @@ def train_batch(batch, model, criterion, optimizer, *, pack_seq=True, forcing_ra
     input_lengths = None
 
   optimizer.zero_grad()
-  _, loss = model(input_tensor.to(DEVICE), target_tensor.to(DEVICE), input_lengths, criterion,
-                  forcing_ratio=forcing_ratio, partial_forcing=partial_forcing,
-                  ext_vocab_size=oov_dict['size'] if oov_dict is not None else None)
-  loss.backward()
+  out = model(input_tensor.to(DEVICE), target_tensor.to(DEVICE), input_lengths, criterion,
+              forcing_ratio=forcing_ratio, partial_forcing=partial_forcing,
+              ext_vocab_size=oov_dict['size'] if oov_dict is not None else None)
+  out.loss.backward()
   optimizer.step()
 
   target_length = target_tensor.size(0)
-  return loss.item() / target_length
+  return out.loss.item() / target_length
 
 
 def train(train_generator, vocab: Vocab, model: Seq2Seq, params: Params, valid_generator=None):

@@ -5,6 +5,7 @@ from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 import random
 from params import Params
 from utils import Vocab
+from typing import Union
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -89,7 +90,7 @@ class DecoderRNN(nn.Module):
       self.out.weight = tied_embedding.weight
 
   def forward(self, embedded, hidden, encoder_states=None, *, encoder_word_idx=None,
-              ext_vocab_size: int=None):
+              ext_vocab_size: int=None, log_prob: bool=True):
     """
     :param embedded: (batch size, embed size)
     :param hidden: (1, batch size, decoder hidden size)
@@ -97,8 +98,9 @@ class DecoderRNN(nn.Module):
     :param encoder_word_idx: (src seq len, batch size), for pointer network
     :param ext_vocab_size: the dynamic vocab size, determined by the max num of OOV words contained
                            in any src seq in this batch, for pointer network
+    :param log_prob: return log probability instead of probability
     :return: tuple of four things:
-             1. log word prob, (batch size, dynamic vocab size);
+             1. word prob or log word prob, (batch size, dynamic vocab size);
              2. RNN hidden state after this step, (1, batch size, decoder hidden size);
              3. attention weights over encoder states, (batch size, src seq len, 1);
              4. prob of copying by pointing as opposed to generating, (batch size, 1)
@@ -146,11 +148,22 @@ class DecoderRNN(nn.Module):
       # add pointer probabilities to output
       ptr_output = enc_attn.squeeze(2)
       output.scatter_add_(1, encoder_word_idx.transpose(0, 1), prob_ptr * ptr_output)
-      output = torch.log(output)  # necessary for NLLLoss
+      if log_prob: output = torch.log(output)  # necessary for NLLLoss
     else:
-      output = F.log_softmax(logits, dim=1)
+      if log_prob: output = F.log_softmax(logits, dim=1)
+      else: output = F.softmax(logits, dim=1)
 
     return output, hidden, enc_attn, prob_ptr
+
+
+class Seq2SeqOutput(object):
+
+  def __init__(self, decoded_tokens: torch.Tensor, loss: Union[torch.Tensor, float]=0,
+               enc_attn_weights: torch.Tensor=None, ptr_probs: torch.Tensor=None):
+    self.decoded_tokens = decoded_tokens  # (out seq len, batch size)
+    self.loss = loss  # scalar
+    self.enc_attn_weights = enc_attn_weights  # (out seq len, batch size, src seq len)
+    self.ptr_probs = ptr_probs  # (out seq len, batch size)
 
 
 class Seq2Seq(nn.Module):
@@ -205,23 +218,29 @@ class Seq2Seq(nn.Module):
     return tensor
 
   def forward(self, input_tensor, target_tensor=None, input_lengths=None, criterion=None, *,
-              forcing_ratio=0, partial_forcing=True, ext_vocab_size=None):
+              forcing_ratio=0, partial_forcing=True, ext_vocab_size=None, sample=False,
+              visualize: bool=None) -> Seq2SeqOutput:
     """
     :param input_tensor: tensor of word indices, (src seq len, batch size)
     :param target_tensor: tensor of word indices, (tgt seq len, batch size)
     :param input_lengths: see explanation in `EncoderRNN`
-    :param criterion: the loss function
-    :param forcing_ratio: see explanation in `Params` (training mode only)
-    :param partial_forcing: see explanation in `Params` (training mode only)
+    :param criterion: the loss function; if set, loss will be returned
+    :param forcing_ratio: see explanation in `Params` (requires `target_tensor`, training only)
+    :param partial_forcing: see explanation in `Params` (training only)
     :param ext_vocab_size: see explanation in `DecoderRNN`
-    :return: list of decoded sentences (each sentence is a list of word indices); and if
-             `criterion` is set, the loss; otherwise a tuple for visualization containing:
-             1. attention weights, (out seq len, batch size, src seq len);
-             2. pointer weights, (out seq len, batch size)
+    :param sample: if True, the returned `decoded_tokens` will be based on random sampling instead
+                   of greedily selecting the token of the highest probability at each step
+    :param visualize: whether to return data for attention and pointer visualization; if None,
+                      return if no `criterion` is provided
     Run the seq2seq model for training or testing.
     """
     input_length = input_tensor.size(0)
     batch_size = input_tensor.size(1)
+    log_prob = type(criterion) is nn.NLLLoss
+    if visualize is None:
+      visualize = criterion is None
+    if visualize and not (self.enc_attn or self.pointer):
+      visualize = False  # nothing to visualize
 
     encoder_hidden = self.encoder.init_hidden(batch_size)
     # encoder_embedded: (input len, batch size, embed size)
@@ -235,7 +254,11 @@ class Seq2Seq(nn.Module):
     else:
       target_length = target_tensor.size(0)
 
-    if forcing_ratio > 0:
+    if forcing_ratio == 1:
+      # if fully teacher-forced, it may be possible to eliminate the for-loop over decoder steps
+      # for generality, this optimization is not investigated
+      use_teacher_forcing = True
+    elif forcing_ratio > 0:
       if partial_forcing:
         use_teacher_forcing = None  # decide later individually in each step
       else:
@@ -243,16 +266,11 @@ class Seq2Seq(nn.Module):
     else:
       use_teacher_forcing = False
 
-    decoded_tokens = torch.zeros(batch_size, target_length)
-
-    if criterion:
-      loss = 0
-    else:
-      enc_attn_weights, ptr_probs = None, None
-      if self.enc_attn or self.pointer:
-        enc_attn_weights = torch.zeros(target_length, batch_size, input_length)
-        if self.pointer:
-          ptr_probs = torch.zeros(target_length, batch_size)
+    r = Seq2SeqOutput(torch.zeros(target_length, batch_size)) # initialize return values
+    if visualize:
+      r.enc_attn_weights = torch.zeros(target_length, batch_size, input_length)
+      if self.pointer:
+        r.ptr_probs = torch.zeros(target_length, batch_size)
 
     decoder_input = torch.tensor([self.SOS] * batch_size, device=DEVICE)
     decoder_hidden = encoder_hidden
@@ -261,25 +279,27 @@ class Seq2Seq(nn.Module):
       decoder_embedded = self.embedding(self.filter_oov(decoder_input, ext_vocab_size))
       decoder_output, decoder_hidden, dec_enc_attn, dec_prob_ptr = \
         self.decoder(decoder_embedded, decoder_hidden, encoder_outputs,
-                     encoder_word_idx=input_tensor, ext_vocab_size=ext_vocab_size)
+                     encoder_word_idx=input_tensor, ext_vocab_size=ext_vocab_size,
+                     log_prob=log_prob)
       # save the decoded tokens
-      _, topi = decoder_output.data.topk(1)  # topi shape: (batch size, k=1)
-      topi = topi.squeeze(1)
-      decoded_tokens[:, di] = topi
+      if not sample:
+        _, top_idx = decoder_output.data.topk(1)  # top_idx shape: (batch size, k=1)
+      else:
+        prob_distribution = torch.exp(decoder_output) if log_prob else decoder_output
+        top_idx = torch.multinomial(prob_distribution, 1)
+      top_idx = top_idx.squeeze(1)
+      r.decoded_tokens[di] = top_idx
       # compute additional outputs
       if criterion:
-        loss += criterion(decoder_output, target_tensor[di])
-      elif self.enc_attn or self.pointer:
-        enc_attn_weights[di] = dec_enc_attn.squeeze(2).data
+        r.loss += criterion(decoder_output, target_tensor[di])
+      if visualize:
+        r.enc_attn_weights[di] = dec_enc_attn.squeeze(2).data
         if self.pointer:
-          ptr_probs[di] = dec_prob_ptr.squeeze(1).data
+          r.ptr_probs[di] = dec_prob_ptr.squeeze(1).data
       # decide the next input
       if use_teacher_forcing or (use_teacher_forcing is None and random.random() < forcing_ratio):
         decoder_input = target_tensor[di]  # teacher forcing
       else:
-        decoder_input = topi.detach()  # detach from history as input
+        decoder_input = top_idx.detach()  # detach from history as input
     
-    if criterion:
-      return decoded_tokens, loss
-    else:
-      return decoded_tokens, (enc_attn_weights, ptr_probs)
+    return r
