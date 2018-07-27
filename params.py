@@ -21,14 +21,15 @@ class Params:
 
   # Training
   lr: float = 0.0005  # learning rate
-  batch_size: int = 32
-  n_batches: int = 3000  # how many batches per epoch
+  batch_size: int = 64
+  n_batches: int = 1000  # how many batches per epoch
   val_batch_size: int = 128
   n_val_batches: int = 50  # how many validation batches per epoch
   n_epochs: int = 15
   pack_seq: bool = True  # use packed sequence to skip PAD inputs?
   forcing_ratio: float = 0.5  # percentage of using teacher forcing
   partial_forcing: bool = True  # in a seq, can some steps be teacher forced and some not?
+  rl_ratio: float = 0.9  # use mixed objective if > 0; ratio of reinforcement learning
 
   # Data
   embed_file: Optional[str] = 'data/.vector_cache/glove.6B.100d.txt'  # use pre-trained embeddings
@@ -38,5 +39,5 @@ class Params:
   max_tgt_len: int = 25
 
   # Saving model automatically during training
-  model_path_prefix: Optional[str] = 'checkpoints/debug'
+  model_path_prefix: Optional[str] = 'checkpoints/rl'
   keep_every_epoch: bool = False  # save all epochs, or only the best and the latest one?

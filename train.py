@@ -7,24 +7,43 @@ from tqdm import tqdm
 from utils import Dataset, show_plot, Vocab
 from model import Seq2Seq, DEVICE
 from params import Params
-from test import eval_batch
+from test import eval_batch, eval_batch_output
 
 
 def train_batch(batch, model, criterion, optimizer, *, pack_seq=True, forcing_ratio=0.5,
-                partial_forcing=True):
-  _, input_tensor, target_tensor, input_lengths, oov_dict = batch
+                partial_forcing=True, rl_ratio: float=0, vocab=None):
+  examples, input_tensor, target_tensor, input_lengths, oov_dict = batch
   if not pack_seq:
     input_lengths = None
 
   optimizer.zero_grad()
-  out = model(input_tensor.to(DEVICE), target_tensor.to(DEVICE), input_lengths, criterion,
+  input_tensor = input_tensor.to(DEVICE)
+  target_tensor = target_tensor.to(DEVICE)
+  ext_vocab_size = oov_dict['size'] if oov_dict is not None else None
+
+  out = model(input_tensor, target_tensor, input_lengths, criterion,
               forcing_ratio=forcing_ratio, partial_forcing=partial_forcing,
-              ext_vocab_size=oov_dict['size'] if oov_dict is not None else None)
-  out.loss.backward()
+              ext_vocab_size=ext_vocab_size)
+
+  if rl_ratio > 0:
+    assert vocab is not None
+    sample_out = model(input_tensor, None, input_lengths, criterion, sample=True,
+                       ext_vocab_size=ext_vocab_size)
+    baseline_out = model(input_tensor, None, input_lengths, visualize=False,
+                         ext_vocab_size=ext_vocab_size)
+    scores = eval_batch_output([ex.tgt for ex in examples], vocab, oov_dict,
+                               sample_out.decoded_tokens, baseline_out.decoded_tokens)
+    reward = scores[0]['l_f'] - scores[1]['l_f']  # sample - baseline
+    rl_loss = reward * sample_out.loss
+    loss = (1 - rl_ratio) * out.loss + rl_ratio * rl_loss
+  else:
+    loss = out.loss
+
+  loss.backward()
   optimizer.step()
 
   target_length = target_tensor.size(0)
-  return out.loss.item() / target_length
+  return loss.item() / target_length
 
 
 def train(train_generator, vocab: Vocab, model: Seq2Seq, params: Params, valid_generator=None):
@@ -53,7 +72,8 @@ def train(train_generator, vocab: Vocab, model: Seq2Seq, params: Params, valid_g
       batch = next(train_generator)
       loss = train_batch(batch, model, criterion, optimizer, pack_seq=params.pack_seq,
                          forcing_ratio=params.forcing_ratio,
-                         partial_forcing=params.partial_forcing)
+                         partial_forcing=params.partial_forcing,
+                         rl_ratio=params.rl_ratio, vocab=vocab)
 
       epoch_loss += float(loss)
       epoch_avg_loss = epoch_loss / batch_count

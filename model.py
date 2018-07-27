@@ -266,7 +266,8 @@ class Seq2Seq(nn.Module):
     else:
       use_teacher_forcing = False
 
-    r = Seq2SeqOutput(torch.zeros(target_length, batch_size)) # initialize return values
+    # initialize return values
+    r = Seq2SeqOutput(torch.zeros(target_length, batch_size, dtype=torch.long))
     if visualize:
       r.enc_attn_weights = torch.zeros(target_length, batch_size, input_length)
       if self.pointer:
@@ -287,11 +288,15 @@ class Seq2Seq(nn.Module):
       else:
         prob_distribution = torch.exp(decoder_output) if log_prob else decoder_output
         top_idx = torch.multinomial(prob_distribution, 1)
-      top_idx = top_idx.squeeze(1)
+      top_idx = top_idx.squeeze(1).detach()  # detach from history as input
       r.decoded_tokens[di] = top_idx
       # compute additional outputs
       if criterion:
-        r.loss += criterion(decoder_output, target_tensor[di])
+        if target_tensor is None:
+          gold_standard = top_idx  # for sampling
+        else:
+          gold_standard = target_tensor[di]
+        r.loss += criterion(decoder_output, gold_standard)
       if visualize:
         r.enc_attn_weights[di] = dec_enc_attn.squeeze(2).data
         if self.pointer:
@@ -300,6 +305,6 @@ class Seq2Seq(nn.Module):
       if use_teacher_forcing or (use_teacher_forcing is None and random.random() < forcing_ratio):
         decoder_input = target_tensor[di]  # teacher forcing
       else:
-        decoder_input = top_idx.detach()  # detach from history as input
+        decoder_input = top_idx
     
     return r

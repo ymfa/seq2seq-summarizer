@@ -7,7 +7,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 from typing import NamedTuple, List, Callable, Dict, Tuple
-from collections import Counter
+from collections import Counter, defaultdict
 from random import shuffle
 import torch
 
@@ -260,19 +260,22 @@ def tokens_to_rouge_output(tokens: List[str], newline: str=None) -> str:
 
 this_dir = os.path.dirname(os.path.abspath(__file__))
 
-rouge_pattern = re.compile(rb"seq2seq ROUGE-(.+) Average_([RPF]): ([\d.]+) "
+rouge_pattern = re.compile(rb"(\d+) ROUGE-(.+) Average_([RPF]): ([\d.]+) "
                            rb"\(95%-conf\.int\. ([\d.]+) - ([\d.]+)\)")
 
-def rouge(pred_docs: List[List[str]], tgt_docs: List[List[str]]) -> Dict[str, float]:
-  """Perform single-reference ROUGE evaluation on docs and return an average score."""
-  results = {}  # e.g. 'su4_f' => 0.35
+def rouge(target: List[List[str]], *predictions: List[List[str]]) -> Dict[int, Dict[str, float]]:
+  """Perform single-reference ROUGE evaluation of one or more systems' predictions."""
+  results = defaultdict(dict)  # e.g. 0 => 'su4_f' => 0.35
   with TemporaryDirectory() as folder:  # on my server, /tmp is a RAM disk
     # write SPL files
     eval_entries = []
-    for i, (pred_tokens, tgt_tokens) in enumerate(zip(pred_docs, tgt_docs)):
-      sys_file = 'sys_%d.spl' % i
-      with open(os.path.join(folder, sys_file), 'wt') as f:
-        f.write(tokens_to_rouge_output(pred_tokens))
+    for i, tgt_tokens in enumerate(target):
+      sys_entries = []
+      for j, pred_docs in enumerate(predictions):
+        sys_file = 'sys%d_%d.spl' % (j, i)
+        sys_entries.append('\n    <P ID="%d">%s</P>' % (j, sys_file))
+        with open(os.path.join(folder, sys_file), 'wt') as f:
+          f.write(tokens_to_rouge_output(pred_docs[i]))
       ref_file = 'ref_%d.spl' % i
       with open(os.path.join(folder, ref_file), 'wt') as f:
         f.write(tokens_to_rouge_output(tgt_tokens))
@@ -281,13 +284,12 @@ def rouge(pred_docs: List[List[str]], tgt_docs: List[List[str]]) -> Dict[str, fl
   <PEER-ROOT>{0}</PEER-ROOT>
   <MODEL-ROOT>{0}</MODEL-ROOT>
   <INPUT-FORMAT TYPE="SPL"></INPUT-FORMAT>
-  <PEERS>
-    <P ID="seq2seq">{2}</P>
+  <PEERS>{2}
   </PEERS>
   <MODELS>
     <M ID="A">{3}</M>
   </MODELS>
-</EVAL>""".format(folder, i, sys_file, ref_file)
+</EVAL>""".format(folder, i, ''.join(sys_entries), ref_file)
       eval_entries.append(eval_entry)
     # write config file
     xml = '<ROUGE-EVAL version="1.0">{0}\n</ROUGE-EVAL>'.format("".join(eval_entries))
@@ -301,23 +303,22 @@ def rouge(pred_docs: List[List[str]], tgt_docs: List[List[str]]) -> Dict[str, fl
   for line in out.split(b'\n'):
     match = rouge_pattern.match(line)
     if match:
-      metric, rpf, value, low, high = match.groups()
-      results[(metric + b'_' + rpf).decode('utf-8').lower()] = float(value)
+      sys_id, metric, rpf, value, low, high = match.groups()
+      results[int(sys_id)][(metric + b'_' + rpf).decode('utf-8').lower()] = float(value)
   return results
 
 
-def rouge_single(example: Tuple[List[str], List[str]]) -> Dict[str, float]:
+def rouge_single(example: List[List[str]]) -> Dict[int, Dict[str, float]]:
   """Helper for `rouge_parallel()`."""
-  pred_doc, tgt_doc = example
-  return rouge([pred_doc], [tgt_doc])
+  return rouge(*example)
 
 
-def rouge_parallel(pred_docs: List[List[str]], tgt_docs: List[List[str]]) \
-        -> List[Dict[str, float]]:
+def rouge_parallel(target: List[List[str]], *predictions: List[List[str]]) \
+        -> List[Dict[int, Dict[str, float]]]:
   """
   Run ROUGE tests in parallel (by Python multi-threading, i.e. multiprocessing.dummy) to obtain
   per-document scores. Depending on batch size and hardware, this may be slower or faster than
   `rouge()`.
   """
   with Pool() as p:
-    return p.map(rouge_single, zip(pred_docs, tgt_docs))
+    return p.map(rouge_single, zip(target, *predictions))
