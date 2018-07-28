@@ -6,8 +6,8 @@ from multiprocessing.dummy import Pool
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
-from typing import NamedTuple, List, Callable, Dict, Tuple
-from collections import Counter, defaultdict
+from typing import NamedTuple, List, Callable, Dict
+from collections import Counter
 from random import shuffle
 import torch
 
@@ -263,9 +263,9 @@ this_dir = os.path.dirname(os.path.abspath(__file__))
 rouge_pattern = re.compile(rb"(\d+) ROUGE-(.+) Average_([RPF]): ([\d.]+) "
                            rb"\(95%-conf\.int\. ([\d.]+) - ([\d.]+)\)")
 
-def rouge(target: List[List[str]], *predictions: List[List[str]]) -> Dict[int, Dict[str, float]]:
+def rouge(target: List[List[str]], *predictions: List[List[str]]) -> List[Dict[str, float]]:
   """Perform single-reference ROUGE evaluation of one or more systems' predictions."""
-  results = defaultdict(dict)  # e.g. 0 => 'su4_f' => 0.35
+  results = [dict() for _ in range(len(predictions))]  # e.g. 0 => 'su4_f' => 0.35
   with TemporaryDirectory() as folder:  # on my server, /tmp is a RAM disk
     # write SPL files
     eval_entries = []
@@ -308,13 +308,13 @@ def rouge(target: List[List[str]], *predictions: List[List[str]]) -> Dict[int, D
   return results
 
 
-def rouge_single(example: List[List[str]]) -> Dict[int, Dict[str, float]]:
+def rouge_single(example: List[List[str]]) -> List[Dict[str, float]]:
   """Helper for `rouge_parallel()`."""
   return rouge(*example)
 
 
 def rouge_parallel(target: List[List[str]], *predictions: List[List[str]]) \
-        -> List[Dict[int, Dict[str, float]]]:
+        -> List[List[Dict[str, float]]]:
   """
   Run ROUGE tests in parallel (by Python multi-threading, i.e. multiprocessing.dummy) to obtain
   per-document scores. Depending on batch size and hardware, this may be slower or faster than

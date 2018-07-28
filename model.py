@@ -26,6 +26,7 @@ class EncoderRNN(nn.Module):
                           if set, we use `PackedSequence` to skip the PAD inputs and leave the
                           corresponding encoder states as zeros
     :return: (src seq len, batch size, hidden size * num directions = decoder hidden size)
+
     Perform multi-step encoding.
     """
     if input_lengths is not None:
@@ -104,6 +105,7 @@ class DecoderRNN(nn.Module):
              2. RNN hidden state after this step, (1, batch size, decoder hidden size);
              3. attention weights over encoder states, (batch size, src seq len, 1);
              4. prob of copying by pointing as opposed to generating, (batch size, 1)
+
     Perform single-step decoding.
     """
     batch_size = embedded.size(0)
@@ -158,8 +160,11 @@ class DecoderRNN(nn.Module):
 
 class Seq2SeqOutput(object):
 
-  def __init__(self, decoded_tokens: torch.Tensor, loss: Union[torch.Tensor, float]=0,
+  def __init__(self, encoder_outputs: torch.Tensor, encoder_hidden: torch.Tensor,
+               decoded_tokens: torch.Tensor, loss: Union[torch.Tensor, float]=0,
                enc_attn_weights: torch.Tensor=None, ptr_probs: torch.Tensor=None):
+    self.encoder_outputs = encoder_outputs
+    self.encoder_hidden = encoder_hidden
     self.decoded_tokens = decoded_tokens  # (out seq len, batch size)
     self.loss = loss  # scalar
     self.enc_attn_weights = enc_attn_weights  # (out seq len, batch size, src seq len)
@@ -176,6 +181,7 @@ class Seq2Seq(nn.Module):
                               time, as during training the num of steps is determined by the
                               `target_tensor`); it is safe to change `self.max_output_length` as
                               it network architecture is independent of src/tgt seq lengths
+
     Create the seq2seq model; its encoder and decoder will be created automatically.
     """
     super(Seq2Seq, self).__init__()
@@ -219,7 +225,7 @@ class Seq2Seq(nn.Module):
 
   def forward(self, input_tensor, target_tensor=None, input_lengths=None, criterion=None, *,
               forcing_ratio=0, partial_forcing=True, ext_vocab_size=None, sample=False,
-              visualize: bool=None) -> Seq2SeqOutput:
+              saved_out: Seq2SeqOutput=None, visualize: bool=None) -> Seq2SeqOutput:
     """
     :param input_tensor: tensor of word indices, (src seq len, batch size)
     :param target_tensor: tensor of word indices, (tgt seq len, batch size)
@@ -230,8 +236,11 @@ class Seq2Seq(nn.Module):
     :param ext_vocab_size: see explanation in `DecoderRNN`
     :param sample: if True, the returned `decoded_tokens` will be based on random sampling instead
                    of greedily selecting the token of the highest probability at each step
+    :param saved_out: the output of this function in a previous run; if set, the encoding step will
+                      be skipped and we reuse the encoder states saved in this object
     :param visualize: whether to return data for attention and pointer visualization; if None,
                       return if no `criterion` is provided
+
     Run the seq2seq model for training or testing.
     """
     input_length = input_tensor.size(0)
@@ -241,13 +250,6 @@ class Seq2Seq(nn.Module):
       visualize = criterion is None
     if visualize and not (self.enc_attn or self.pointer):
       visualize = False  # nothing to visualize
-
-    encoder_hidden = self.encoder.init_hidden(batch_size)
-    # encoder_embedded: (input len, batch size, embed size)
-    encoder_embedded = self.embedding(self.filter_oov(input_tensor, ext_vocab_size))
-
-    encoder_outputs, encoder_hidden = \
-      self.encoder(encoder_embedded, encoder_hidden, input_lengths)
 
     if target_tensor is None:
       target_length = self.max_output_length
@@ -266,8 +268,21 @@ class Seq2Seq(nn.Module):
     else:
       use_teacher_forcing = False
 
+    if saved_out:  # reuse encoder states of a previous run
+      encoder_outputs = saved_out.encoder_outputs
+      encoder_hidden = saved_out.encoder_hidden
+      assert input_length == encoder_outputs.size(0)
+      assert batch_size == encoder_outputs.size(1)
+    else:  # run the encoder
+      encoder_hidden = self.encoder.init_hidden(batch_size)
+      # encoder_embedded: (input len, batch size, embed size)
+      encoder_embedded = self.embedding(self.filter_oov(input_tensor, ext_vocab_size))
+      encoder_outputs, encoder_hidden = \
+        self.encoder(encoder_embedded, encoder_hidden, input_lengths)
+
     # initialize return values
-    r = Seq2SeqOutput(torch.zeros(target_length, batch_size, dtype=torch.long))
+    r = Seq2SeqOutput(encoder_outputs, encoder_hidden,
+                      torch.zeros(target_length, batch_size, dtype=torch.long))
     if visualize:
       r.enc_attn_weights = torch.zeros(target_length, batch_size, input_length)
       if self.pointer:

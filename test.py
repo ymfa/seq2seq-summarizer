@@ -49,8 +49,11 @@ def decode_batch(batch, model, vocab, criterion=None, *, pack_seq=True) \
   if not pack_seq:
     input_lengths = None
   with torch.no_grad():
-    out = model(input_tensor.to(DEVICE), target_tensor.to(DEVICE),
-                input_lengths, criterion, ext_vocab_size=ext_vocab_size)
+    input_tensor = input_tensor.to(DEVICE)
+    if target_tensor is not None:
+      target_tensor = target_tensor.to(DEVICE)
+    out = model(input_tensor, target_tensor, input_lengths, criterion,
+                ext_vocab_size=ext_vocab_size)
     decoded_batch = decode_batch_output(out.decoded_tokens, vocab, oov_idx2word)
   if isinstance(out.loss, torch.Tensor):  # iff criterion was provided
     out.loss = out.loss.item() / target_length
@@ -64,8 +67,8 @@ def decode_one(*args, **kwargs):
   """
   decoded_batch, out = decode_batch(*args, **kwargs)
   decoded_doc = decoded_batch[0]
-  if out.attn_weights is not None:
-    out.attn_weights = out.attn_weights[:len(decoded_doc), 0, :]
+  if out.enc_attn_weights is not None:
+    out.enc_attn_weights = out.enc_attn_weights[:len(decoded_doc), 0, :]
   if out.ptr_probs is not None:
     out.ptr_probs = out.ptr_probs[:len(decoded_doc), 0]
   return decoded_doc, out
@@ -81,7 +84,7 @@ def eval_batch(batch, model, vocab, criterion=None, *, pack_seq=True) -> Tuple[f
 
 
 def eval_batch_output(tgt_tensor_or_tokens: Union[torch.Tensor, List[List[str]]], vocab: Vocab,
-                      oov_dict: dict, *pred_tensors: torch.Tensor) -> Dict[int, Dict[str, float]]:
+                      oov_dict: dict, *pred_tensors: torch.Tensor) -> List[Dict[str, float]]:
   """
   :param tgt_tensor_or_tokens: the gold standard, either as indices or textual tokens
   :param vocab: the fixed-size vocab

@@ -27,9 +27,9 @@ def train_batch(batch, model, criterion, optimizer, *, pack_seq=True, forcing_ra
 
   if rl_ratio > 0:
     assert vocab is not None
-    sample_out = model(input_tensor, None, input_lengths, criterion, sample=True,
+    sample_out = model(input_tensor, saved_out=out, criterion=criterion, sample=True,
                        ext_vocab_size=ext_vocab_size)
-    baseline_out = model(input_tensor, None, input_lengths, visualize=False,
+    baseline_out = model(input_tensor, saved_out=out, visualize=False,
                          ext_vocab_size=ext_vocab_size)
     scores = eval_batch_output([ex.tgt for ex in examples], vocab, oov_dict,
                                sample_out.decoded_tokens, baseline_out.decoded_tokens)
