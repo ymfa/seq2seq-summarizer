@@ -150,7 +150,7 @@ class DecoderRNN(nn.Module):
       # add pointer probabilities to output
       ptr_output = enc_attn.squeeze(2)
       output.scatter_add_(1, encoder_word_idx.transpose(0, 1), prob_ptr * ptr_output)
-      if log_prob: output = torch.log(output)  # necessary for NLLLoss
+      if log_prob: output = torch.log(output)
     else:
       if log_prob: output = F.log_softmax(logits, dim=1)
       else: output = F.softmax(logits, dim=1)
@@ -245,7 +245,7 @@ class Seq2Seq(nn.Module):
     """
     input_length = input_tensor.size(0)
     batch_size = input_tensor.size(1)
-    log_prob = type(criterion) is nn.NLLLoss
+    log_prob = not (sample or self.decoder.pointer)  # don't apply log too soon in these cases
     if visualize is None:
       visualize = criterion is None
     if visualize and not (self.enc_attn or self.pointer):
@@ -311,6 +311,8 @@ class Seq2Seq(nn.Module):
           gold_standard = top_idx  # for sampling
         else:
           gold_standard = target_tensor[di]
+        if not log_prob:
+          decoder_output = torch.log(decoder_output)  # necessary for NLLLoss
         r.loss += criterion(decoder_output, gold_standard)
       if visualize:
         r.enc_attn_weights[di] = dec_enc_attn.squeeze(2).data

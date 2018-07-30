@@ -80,7 +80,7 @@ def eval_batch(batch, model, vocab, criterion=None, *, pack_seq=True) -> Tuple[f
   examples = batch[0]
   gold_summaries = [ex.tgt for ex in examples]
   scores = rouge(gold_summaries, decoded_batch)
-  return scores[0]['l_f'], out.loss
+  return out.loss, scores[0]['l_f']
 
 
 def eval_batch_output(tgt_tensor_or_tokens: Union[torch.Tensor, List[List[str]]], vocab: Vocab,

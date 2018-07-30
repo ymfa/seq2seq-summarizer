@@ -221,6 +221,7 @@ def show_plot(loss, step=1, val_loss=None, val_metric=None, val_step=1, file_pre
     ax2.set_ylabel('ROUGE', color='r')
   if file_prefix:
     plt.savefig(file_prefix + '.png')
+    plt.close()
 
 
 def show_attention_map(src_words, pred_words, attention, pointer_ratio=None):

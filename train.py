@@ -33,17 +33,20 @@ def train_batch(batch, model, criterion, optimizer, *, pack_seq=True, forcing_ra
                          ext_vocab_size=ext_vocab_size)
     scores = eval_batch_output([ex.tgt for ex in examples], vocab, oov_dict,
                                sample_out.decoded_tokens, baseline_out.decoded_tokens)
-    reward = scores[0]['l_f'] - scores[1]['l_f']  # sample - baseline
-    rl_loss = reward * sample_out.loss
+    greedy_rouge = scores[1]['l_f']
+    neg_reward = greedy_rouge - scores[0]['l_f']
+    # if sample > baseline, the reward is positive (i.e. good exploration), rl_loss is negative
+    rl_loss = neg_reward * sample_out.loss
     loss = (1 - rl_ratio) * out.loss + rl_ratio * rl_loss
   else:
     loss = out.loss
+    greedy_rouge = None
 
   loss.backward()
   optimizer.step()
 
   target_length = target_tensor.size(0)
-  return loss.item() / target_length
+  return loss.item() / target_length, greedy_rouge
 
 
 def train(train_generator, vocab: Vocab, model: Seq2Seq, params: Params, valid_generator=None):
@@ -63,21 +66,27 @@ def train(train_generator, vocab: Vocab, model: Seq2Seq, params: Params, valid_g
   best_avg_loss, best_epoch_id = float("inf"), None
 
   for epoch_count in range(1, params.n_epochs + 1):
-    epoch_loss = 0
+    rl_ratio = params.rl_ratio if epoch_count >= params.rl_start_epoch else 0
+    epoch_loss, epoch_metric = 0, 0
     epoch_avg_loss, valid_avg_loss, valid_avg_metric = None, None, None
     prog_bar = tqdm(range(1, params.n_batches + 1), desc='Epoch %d' % epoch_count)
     model.train()
 
     for batch_count in prog_bar:  # training batches
       batch = next(train_generator)
-      loss = train_batch(batch, model, criterion, optimizer, pack_seq=params.pack_seq,
-                         forcing_ratio=params.forcing_ratio,
-                         partial_forcing=params.partial_forcing,
-                         rl_ratio=params.rl_ratio, vocab=vocab)
+      loss, metric = train_batch(batch, model, criterion, optimizer, pack_seq=params.pack_seq,
+                                forcing_ratio=params.forcing_ratio,
+                                partial_forcing=params.partial_forcing,
+                                rl_ratio=rl_ratio, vocab=vocab)
 
       epoch_loss += float(loss)
       epoch_avg_loss = epoch_loss / batch_count
-      prog_bar.set_postfix(loss='%g' % epoch_avg_loss)
+      if metric is not None:  # print ROUGE as well if reinforcement learning is enabled
+        epoch_metric += metric
+        epoch_avg_metric = epoch_metric / batch_count
+        prog_bar.set_postfix(loss='%g' % epoch_avg_loss, rouge='%.4g' % (epoch_avg_metric * 100))
+      else:
+        prog_bar.set_postfix(loss='%g' % epoch_avg_loss)
 
       cached_losses.append(loss)
       if (total_batch_count + batch_count) % plot_every == 0:
@@ -92,7 +101,7 @@ def train(train_generator, vocab: Vocab, model: Seq2Seq, params: Params, valid_g
 
       for batch_count in prog_bar:
         batch = next(valid_generator)
-        metric, loss = eval_batch(batch, model, vocab, criterion, pack_seq=params.pack_seq)
+        loss, metric = eval_batch(batch, model, vocab, criterion, pack_seq=params.pack_seq)
         valid_loss += loss
         valid_metric += metric
         valid_avg_loss = valid_loss / batch_count
@@ -134,6 +143,9 @@ def train(train_generator, vocab: Vocab, model: Seq2Seq, params: Params, valid_g
         'params': params,
         'optimizer': optimizer
       }, '%s.train.pt' % params.model_path_prefix)
+
+    if rl_ratio > 0:
+      params.rl_ratio **= params.rl_ratio_power
 
     total_batch_count += params.n_batches
     show_plot(plot_losses, plot_every, plot_val_losses, plot_val_metrics, params.n_batches,
