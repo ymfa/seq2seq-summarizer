@@ -8,7 +8,7 @@ class Params:
   embed_size: int = 100
   enc_bidi: bool = True
   enc_attn: bool = True  # decoder has attention over encoder states?
-  dec_attn: bool = True  # (not yet implemented)
+  dec_attn: bool = True  # decoder has attention over previous decoder states?
   pointer: bool = True  # use pointer network (copy mechanism) in addition to word generator?
   out_embed_size: Optional[int] = None  # if set, use an additional layer before decoder output
   tie_embed: bool = True  # tie the decoder output layer to the input embedding layer?

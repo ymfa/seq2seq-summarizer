@@ -58,6 +58,7 @@ class DecoderRNN(nn.Module):
     self.hidden_size = hidden_size
     self.combined_size = self.hidden_size
     self.enc_attn = enc_attn
+    self.dec_attn = dec_attn
     self.pointer = pointer
     self.out_embed_size = out_embed_size
     if tied_embedding is not None and self.out_embed_size and embed_size != self.out_embed_size:
@@ -70,6 +71,10 @@ class DecoderRNN(nn.Module):
 
     if enc_attn:
       self.enc_bilinear = nn.Bilinear(self.hidden_size, self.hidden_size, 1)
+      self.combined_size += self.hidden_size
+
+    if dec_attn:
+      self.dec_bilinear = nn.Bilinear(self.hidden_size, self.hidden_size, 1)
       self.combined_size += self.hidden_size
 
     self.out_drop = nn.Dropout(out_drop) if out_drop > 0 else None
@@ -90,12 +95,13 @@ class DecoderRNN(nn.Module):
     if tied_embedding is not None:
       self.out.weight = tied_embedding.weight
 
-  def forward(self, embedded, hidden, encoder_states=None, *, encoder_word_idx=None,
-              ext_vocab_size: int=None, log_prob: bool=True):
+  def forward(self, embedded, hidden, encoder_states=None, decoder_states=None, *,
+              encoder_word_idx=None, ext_vocab_size: int=None, log_prob: bool=True):
     """
     :param embedded: (batch size, embed size)
     :param hidden: (1, batch size, decoder hidden size)
     :param encoder_states: (src seq len, batch size, decoder hidden size), for attention mechanism
+    :param decoder_states: (past dec steps, batch size, hidden size), for attention mechanism
     :param encoder_word_idx: (src seq len, batch size), for pointer network
     :param ext_vocab_size: the dynamic vocab size, determined by the max num of OOV words contained
                            in any src seq in this batch, for pointer network
@@ -128,6 +134,15 @@ class DecoderRNN(nn.Module):
         enc_context = torch.bmm(encoder_states.permute(1, 2, 0), enc_attn)
         combined[:, offset:offset+self.hidden_size] = enc_context.squeeze(2)
         offset += self.hidden_size
+
+    if self.dec_attn:
+      if decoder_states is not None and len(decoder_states) > 0:
+        dec_energy = self.dec_bilinear(hidden.expand_as(decoder_states).contiguous(),
+                                       decoder_states)
+        dec_attn = F.softmax(dec_energy, dim=0).transpose(0, 1)
+        dec_context = torch.bmm(decoder_states.permute(1, 2, 0), dec_attn)
+        combined[:, offset:offset + self.hidden_size] = dec_context.squeeze(2)
+      offset += self.hidden_size
 
     if self.out_drop: combined = self.out_drop(combined)
 
@@ -290,13 +305,17 @@ class Seq2Seq(nn.Module):
 
     decoder_input = torch.tensor([self.SOS] * batch_size, device=DEVICE)
     decoder_hidden = encoder_hidden
+    decoder_states = []
 
     for di in range(target_length):
       decoder_embedded = self.embedding(self.filter_oov(decoder_input, ext_vocab_size))
       decoder_output, decoder_hidden, dec_enc_attn, dec_prob_ptr = \
         self.decoder(decoder_embedded, decoder_hidden, encoder_outputs,
+                     torch.cat(decoder_states) if decoder_states else None,
                      encoder_word_idx=input_tensor, ext_vocab_size=ext_vocab_size,
                      log_prob=log_prob)
+      if self.dec_attn:
+        decoder_states.append(decoder_hidden)
       # save the decoded tokens
       if not sample:
         _, top_idx = decoder_output.data.topk(1)  # top_idx shape: (batch size, k=1)
