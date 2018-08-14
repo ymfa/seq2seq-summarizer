@@ -8,7 +8,7 @@ class Params:
   embed_size: int = 100
   enc_bidi: bool = True
   enc_attn: bool = True  # decoder has attention over encoder states?
-  dec_attn: bool = True  # decoder has attention over previous decoder states?
+  dec_attn: bool = False  # decoder has attention over previous decoder states?
   pointer: bool = True  # use pointer network (copy mechanism) in addition to word generator?
   out_embed_size: Optional[int] = None  # if set, use an additional layer before decoder output
   tie_embed: bool = True  # tie the decoder output layer to the input embedding layer?
@@ -33,6 +33,8 @@ class Params:
   rl_ratio: float = 0  # use mixed objective if > 0; ratio of RL in the loss function
   rl_ratio_power: float = 1  # increase rl_ratio by **= rl_ratio_power after each epoch; (0, 1]
   rl_start_epoch: int = 1  # start RL at which epoch (later start can ensure a strong baseline)?
+  cover_loss: float = 1  # add coverage loss if > 0; weight of coverage loss as compared to NLLLoss
+  cover_func: str = 'max'  # how to aggregate previous attention distributions? sum or max
 
   # Data
   embed_file: Optional[str] = 'data/.vector_cache/glove.6B.100d.txt'  # use pre-trained embeddings

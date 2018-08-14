@@ -109,7 +109,7 @@ class DecoderRNN(nn.Module):
     :return: tuple of four things:
              1. word prob or log word prob, (batch size, dynamic vocab size);
              2. RNN hidden state after this step, (1, batch size, decoder hidden size);
-             3. attention weights over encoder states, (batch size, src seq len, 1);
+             3. attention weights over encoder states, (batch size, src seq len);
              4. prob of copying by pointing as opposed to generating, (batch size, 1)
 
     Perform single-step decoding.
@@ -134,6 +134,7 @@ class DecoderRNN(nn.Module):
         enc_context = torch.bmm(encoder_states.permute(1, 2, 0), enc_attn)
         combined[:, offset:offset+self.hidden_size] = enc_context.squeeze(2)
         offset += self.hidden_size
+      enc_attn = enc_attn.squeeze(2)
 
     if self.dec_attn:
       if decoder_states is not None and len(decoder_states) > 0:
@@ -163,7 +164,7 @@ class DecoderRNN(nn.Module):
       gen_output = F.softmax(logits, dim=1)  # can't use log_softmax due to adding probabilities
       output[:, :self.vocab_size] = prob_gen * gen_output
       # add pointer probabilities to output
-      ptr_output = enc_attn.squeeze(2)
+      ptr_output = enc_attn
       output.scatter_add_(1, encoder_word_idx.transpose(0, 1), prob_ptr * ptr_output)
       if log_prob: output = torch.log(output)
     else:
@@ -217,6 +218,8 @@ class Seq2Seq(nn.Module):
     self.enc_attn = params.enc_attn
     self.dec_attn = params.dec_attn
     self.pointer = params.pointer
+    self.cover_loss = params.cover_loss
+    self.cover_func = params.cover_func
 
     self.embedding = nn.Embedding(self.vocab_size, self.embed_size, padding_idx=vocab.PAD,
                                   _weight=embedding_weights)
@@ -306,6 +309,7 @@ class Seq2Seq(nn.Module):
     decoder_input = torch.tensor([self.SOS] * batch_size, device=DEVICE)
     decoder_hidden = encoder_hidden
     decoder_states = []
+    enc_attn_weights = []
 
     for di in range(target_length):
       decoder_embedded = self.embedding(self.filter_oov(decoder_input, ext_vocab_size))
@@ -333,8 +337,19 @@ class Seq2Seq(nn.Module):
         if not log_prob:
           decoder_output = torch.log(decoder_output)  # necessary for NLLLoss
         r.loss += criterion(decoder_output, gold_standard)
+        if self.cover_loss:
+          if enc_attn_weights:
+            if self.cover_func == 'max':
+              sum_enc_attn_weights, _ = torch.max(torch.cat(enc_attn_weights), dim=0)
+            elif self.cover_func == 'sum':
+              sum_enc_attn_weights = torch.sum(torch.cat(enc_attn_weights), dim=0)
+            else:
+              raise ValueError('Unrecognized cover_func: ' + self.cover_func)
+            coverage_loss = torch.sum(torch.min(sum_enc_attn_weights, dec_enc_attn)) / batch_size
+            r.loss += self.cover_loss * coverage_loss
+          enc_attn_weights.append(dec_enc_attn.unsqueeze(0))
       if visualize:
-        r.enc_attn_weights[di] = dec_enc_attn.squeeze(2).data
+        r.enc_attn_weights[di] = dec_enc_attn.data
         if self.pointer:
           r.ptr_probs[di] = dec_prob_ptr.squeeze(1).data
       # decide the next input
