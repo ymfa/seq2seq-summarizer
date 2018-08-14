@@ -51,7 +51,7 @@ class EncoderRNN(nn.Module):
 class DecoderRNN(nn.Module):
 
   def __init__(self, vocab_size, embed_size, hidden_size, *, enc_attn=True, dec_attn=True,
-               pointer=True, tied_embedding=None, out_embed_size=None,
+               enc_attn_cover=True, pointer=True, tied_embedding=None, out_embed_size=None,
                in_drop: float=0, rnn_drop: float=0, out_drop: float=0):
     super(DecoderRNN, self).__init__()
     self.vocab_size = vocab_size
@@ -59,6 +59,7 @@ class DecoderRNN(nn.Module):
     self.combined_size = self.hidden_size
     self.enc_attn = enc_attn
     self.dec_attn = dec_attn
+    self.enc_attn_cover = enc_attn_cover
     self.pointer = pointer
     self.out_embed_size = out_embed_size
     if tied_embedding is not None and self.out_embed_size and embed_size != self.out_embed_size:
@@ -72,6 +73,8 @@ class DecoderRNN(nn.Module):
     if enc_attn:
       self.enc_bilinear = nn.Bilinear(self.hidden_size, self.hidden_size, 1)
       self.combined_size += self.hidden_size
+      if enc_attn_cover:
+        self.cover_weight = nn.Parameter(torch.rand(1))
 
     if dec_attn:
       self.dec_bilinear = nn.Bilinear(self.hidden_size, self.hidden_size, 1)
@@ -95,7 +98,7 @@ class DecoderRNN(nn.Module):
     if tied_embedding is not None:
       self.out.weight = tied_embedding.weight
 
-  def forward(self, embedded, hidden, encoder_states=None, decoder_states=None, *,
+  def forward(self, embedded, hidden, encoder_states=None, decoder_states=None, coverage_vector=None, *,
               encoder_word_idx=None, ext_vocab_size: int=None, log_prob: bool=True):
     """
     :param embedded: (batch size, embed size)
@@ -127,6 +130,8 @@ class DecoderRNN(nn.Module):
     if self.enc_attn or self.pointer:
       # energy and attention: (num encoder states, batch size, 1)
       enc_energy = self.enc_bilinear(hidden.expand_as(encoder_states).contiguous(), encoder_states)
+      if self.enc_attn_cover and coverage_vector is not None:
+        enc_energy += self.cover_weight * torch.log(coverage_vector.transpose(0, 1).unsqueeze(2))
       # transpose => (batch size, num encoder states, 1)
       enc_attn = F.softmax(enc_energy, dim=0).transpose(0, 1)
       if self.enc_attn:
@@ -216,6 +221,7 @@ class Seq2Seq(nn.Module):
     self.max_output_length = \
       params.max_tgt_len + 1 if max_output_length is None else max_output_length
     self.enc_attn = params.enc_attn
+    self.enc_attn_cover = params.enc_attn_cover
     self.dec_attn = params.dec_attn
     self.pointer = params.pointer
     self.cover_loss = params.cover_loss
@@ -309,13 +315,13 @@ class Seq2Seq(nn.Module):
     decoder_input = torch.tensor([self.SOS] * batch_size, device=DEVICE)
     decoder_hidden = encoder_hidden
     decoder_states = []
-    enc_attn_weights = []
+    enc_attn_weights, coverage_vector = [], None
 
     for di in range(target_length):
       decoder_embedded = self.embedding(self.filter_oov(decoder_input, ext_vocab_size))
       decoder_output, decoder_hidden, dec_enc_attn, dec_prob_ptr = \
         self.decoder(decoder_embedded, decoder_hidden, encoder_outputs,
-                     torch.cat(decoder_states) if decoder_states else None,
+                     torch.cat(decoder_states) if decoder_states else None, coverage_vector,
                      encoder_word_idx=input_tensor, ext_vocab_size=ext_vocab_size,
                      log_prob=log_prob)
       if self.dec_attn:
@@ -328,7 +334,7 @@ class Seq2Seq(nn.Module):
         top_idx = torch.multinomial(prob_distribution, 1)
       top_idx = top_idx.squeeze(1).detach()  # detach from history as input
       r.decoded_tokens[di] = top_idx
-      # compute additional outputs
+      # compute loss
       if criterion:
         if target_tensor is None:
           gold_standard = top_idx  # for sampling
@@ -337,17 +343,20 @@ class Seq2Seq(nn.Module):
         if not log_prob:
           decoder_output = torch.log(decoder_output)  # necessary for NLLLoss
         r.loss += criterion(decoder_output, gold_standard)
-        if self.cover_loss:
-          if enc_attn_weights:
-            if self.cover_func == 'max':
-              sum_enc_attn_weights, _ = torch.max(torch.cat(enc_attn_weights), dim=0)
-            elif self.cover_func == 'sum':
-              sum_enc_attn_weights = torch.sum(torch.cat(enc_attn_weights), dim=0)
-            else:
-              raise ValueError('Unrecognized cover_func: ' + self.cover_func)
-            coverage_loss = torch.sum(torch.min(sum_enc_attn_weights, dec_enc_attn)) / batch_size
+      # update coverage vector and compute coverage loss
+      if self.enc_attn_cover or (criterion and self.cover_loss > 0):
+        if enc_attn_weights:
+          if self.cover_func == 'max':
+            coverage_vector, _ = torch.max(torch.cat(enc_attn_weights), dim=0)
+          elif self.cover_func == 'sum':
+            coverage_vector = torch.sum(torch.cat(enc_attn_weights), dim=0)
+          else:
+            raise ValueError('Unrecognized cover_func: ' + self.cover_func)
+          if criterion and self.cover_loss > 0:
+            coverage_loss = torch.sum(torch.min(coverage_vector, dec_enc_attn)) / batch_size
             r.loss += self.cover_loss * coverage_loss
-          enc_attn_weights.append(dec_enc_attn.unsqueeze(0))
+        enc_attn_weights.append(dec_enc_attn.unsqueeze(0))
+      # save data for visualization
       if visualize:
         r.enc_attn_weights[di] = dec_enc_attn.data
         if self.pointer:

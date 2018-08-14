@@ -13,6 +13,11 @@ class Params:
   out_embed_size: Optional[int] = None  # if set, use an additional layer before decoder output
   tie_embed: bool = True  # tie the decoder output layer to the input embedding layer?
 
+  # Coverage (to turn on/off, change both `enc_attn_cover` and `cover_loss`)
+  enc_attn_cover: bool = True  # provide coverage as input when computing enc attn?
+  cover_func: str = 'max'  # how to aggregate previous attention distributions? sum or max
+  cover_loss: float = 1  # add coverage loss if > 0; weight of coverage loss as compared to NLLLoss
+
   # Regularization
   enc_rnn_dropout: float = 0
   dec_in_dropout: float = 0
@@ -33,8 +38,6 @@ class Params:
   rl_ratio: float = 0  # use mixed objective if > 0; ratio of RL in the loss function
   rl_ratio_power: float = 1  # increase rl_ratio by **= rl_ratio_power after each epoch; (0, 1]
   rl_start_epoch: int = 1  # start RL at which epoch (later start can ensure a strong baseline)?
-  cover_loss: float = 1  # add coverage loss if > 0; weight of coverage loss as compared to NLLLoss
-  cover_func: str = 'max'  # how to aggregate previous attention distributions? sum or max
 
   # Data
   embed_file: Optional[str] = 'data/.vector_cache/glove.6B.100d.txt'  # use pre-trained embeddings
