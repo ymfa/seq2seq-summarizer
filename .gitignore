@@ -4,6 +4,6 @@ __pycache__/
 .vscode/
 .idea/
 
-/data/
+/data/*
 /checkpoints/
 /debugging.ipynb
