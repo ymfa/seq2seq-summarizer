@@ -49,7 +49,8 @@ def train_batch(batch, model, criterion, optimizer, *, pack_seq=True, forcing_ra
   return loss.item() / target_length, greedy_rouge
 
 
-def train(train_generator, vocab: Vocab, model: Seq2Seq, params: Params, valid_generator=None):
+def train(train_generator, vocab: Vocab, model: Seq2Seq, params: Params, valid_generator=None,
+          saved_state: dict=None):
   # variables for plotting
   plot_points_per_epoch = max(math.log(params.n_batches, 1.6), 1.)
   plot_every = round(params.n_batches / plot_points_per_epoch)
@@ -61,11 +62,16 @@ def train(train_generator, vocab: Vocab, model: Seq2Seq, params: Params, valid_g
                          if parameter.requires_grad)
   print("Training %d trainable parameters..." % total_parameters)
   model.to(DEVICE)
-  optimizer = optim.Adam(model.parameters(), lr=params.lr)
+  if saved_state is None:
+    optimizer = optim.Adam(model.parameters(), lr=params.lr)
+    past_epochs = 0
+  else:
+    optimizer = saved_state['optimizer']
+    past_epochs = saved_state['epoch']
   criterion = nn.NLLLoss(ignore_index=vocab.PAD)
   best_avg_loss, best_epoch_id = float("inf"), None
 
-  for epoch_count in range(1, params.n_epochs + 1):
+  for epoch_count in range(1 + past_epochs, params.n_epochs + 1):
     rl_ratio = params.rl_ratio if epoch_count >= params.rl_start_epoch else 0
     epoch_loss, epoch_metric = 0, 0
     epoch_avg_loss, valid_avg_loss, valid_avg_metric = None, None, None
@@ -75,9 +81,9 @@ def train(train_generator, vocab: Vocab, model: Seq2Seq, params: Params, valid_g
     for batch_count in prog_bar:  # training batches
       batch = next(train_generator)
       loss, metric = train_batch(batch, model, criterion, optimizer, pack_seq=params.pack_seq,
-                                forcing_ratio=params.forcing_ratio,
-                                partial_forcing=params.partial_forcing,
-                                rl_ratio=rl_ratio, vocab=vocab)
+                                 forcing_ratio=params.forcing_ratio,
+                                 partial_forcing=params.partial_forcing,
+                                 rl_ratio=rl_ratio, vocab=vocab)
 
       epoch_loss += float(loss)
       epoch_avg_loss = epoch_loss / batch_count
@@ -126,7 +132,7 @@ def train(train_generator, vocab: Vocab, model: Seq2Seq, params: Params, valid_g
       filename = '%s.%02d.pt' % (params.model_path_prefix, epoch_count)
       torch.save(model, filename)
       if not params.keep_every_epoch:  # clear previously saved models
-        for epoch_id in range(1, epoch_count):
+        for epoch_id in range(1 + past_epochs, epoch_count):
           if epoch_id != best_epoch_id:
             try:
               prev_filename = '%s.%02d.pt' % (params.model_path_prefix, epoch_id)
@@ -153,17 +159,61 @@ def train(train_generator, vocab: Vocab, model: Seq2Seq, params: Params, valid_g
 
 
 if __name__ == "__main__":
-  p = Params()
+  import argparse
 
-  dataset = Dataset(p.data_path, max_src_len=p.max_src_len, max_tgt_len=p.max_tgt_len)
-  v = dataset.build_vocab(p.vocab_size, embed_file=p.embed_file)
-  m = Seq2Seq(v, p)
+  parser = argparse.ArgumentParser(description='Train the seq2seq abstractive summarizer.')
+  parser.add_argument('--resume_from', type=str, metavar='R',
+                      help='path to a saved training status (*.train.pt)')
+  args, unknown_args = parser.parse_known_args()
+
+  if args.resume_from:
+    print("Resuming from %s..." % args.resume_from)
+    train_status = torch.load(args.resume_from)
+    m = torch.load('%s.%02d.pt' % (args.resume_from[:-9], train_status['epoch']))
+    p = train_status['params']
+  else:
+    p = Params()
+    m = None
+    train_status = None
+
+  if unknown_args:  # allow command line args to override params.py
+    arg_name = None
+    for arg_text in unknown_args:
+      if arg_name is None:
+        assert arg_text.startswith('--')
+        arg_name = arg_text[2:]
+      else:
+        arg_curr_value = getattr(p, arg_name)
+        arg_type = type(arg_curr_value)
+        if arg_type is bool:
+          arg_new_value = arg_text.lower() == 'true'
+        elif arg_type is int:
+          try:
+            arg_new_value = int(arg_text)
+          except ValueError:
+            arg_new_value = float(arg_text)
+        else:
+          arg_new_value = arg_type(arg_text)
+        setattr(p, arg_name, arg_new_value)
+        print("Hyper-parameter %s = %s (was %s)" % (arg_name, arg_new_value, arg_curr_value))
+        arg_name = None
+    if arg_name is not None:
+      print("Warning: Argument %s lacks a value and is ignored." % arg_name)
+
+  dataset = Dataset(p.data_path, max_src_len=p.max_src_len, max_tgt_len=p.max_tgt_len,
+                    truncate_src=p.truncate_src, truncate_tgt=p.truncate_tgt)
+  if m is None:
+    v = dataset.build_vocab(p.vocab_size, embed_file=p.embed_file)
+    m = Seq2Seq(v, p)
+  else:
+    v = dataset.build_vocab(p.vocab_size)
 
   train_gen = dataset.generator(p.batch_size, v, v, True if p.pointer else False)
   if p.val_data_path:
-    val_dataset = Dataset(p.val_data_path, max_src_len=p.max_src_len, max_tgt_len=p.max_tgt_len)
+    val_dataset = Dataset(p.val_data_path, max_src_len=p.max_src_len, max_tgt_len=p.max_tgt_len,
+                          truncate_src=p.truncate_src, truncate_tgt=p.truncate_tgt)
     val_gen = val_dataset.generator(p.val_batch_size, v, v, True if p.pointer else False)
   else:
     val_gen = None
 
-  train(train_gen, v, m, p, val_gen)
+  train(train_gen, v, m, p, val_gen, train_status)

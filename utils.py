@@ -10,6 +10,7 @@ from typing import NamedTuple, List, Callable, Dict
 from collections import Counter
 from random import shuffle
 import torch
+import gzip
 
 plt.switch_backend('agg')
 
@@ -96,22 +97,32 @@ def simple_tokenizer(text: str, lower: bool=False, newline: str=None) -> List[st
 class Dataset(object):
 
   def __init__(self, filename: str, tokenize: Callable=simple_tokenizer, max_src_len: int=None,
-               max_tgt_len: int=None):
+               max_tgt_len: int=None, truncate_src: bool=False, truncate_tgt: bool=False):
     print("Reading dataset %s..." % filename, end=' ', flush=True)
     self.filename = filename
     self.pairs = []
     self.src_len = 0
     self.tgt_len = 0
-    with open(filename, encoding='utf-8') as f:
+    if filename.endswith('.gz'):
+      open = gzip.open
+    with open(filename, 'rt', encoding='utf-8') as f:
       for i, line in enumerate(f):
         pair = line.strip().split('\t')
         if len(pair) != 2:
           print("Line %d of %s is malformed." % (i, filename))
           continue
         src = tokenize(pair[0])
-        if max_src_len and len(src) > max_src_len: continue
+        if max_src_len and len(src) > max_src_len:
+          if truncate_src:
+            src = src[:max_src_len]
+          else:
+            continue
         tgt = tokenize(pair[1])
-        if max_tgt_len and len(tgt) > max_tgt_len: continue
+        if max_tgt_len and len(tgt) > max_tgt_len:
+          if truncate_tgt:
+            tgt = tgt[:max_tgt_len]
+          else:
+            continue
         src_len = len(src) + 1  # EOS
         tgt_len = len(tgt) + 1  # EOS
         self.src_len = max(self.src_len, src_len)
@@ -247,7 +258,7 @@ non_word_char_in_word = re.compile(r"(?<=\w)\W(?=\w)")
 
 not_for_output = {'<PAD>', '<SOS>', '<EOS>', '<UNK>'}
 
-def tokens_to_rouge_output(tokens: List[str], newline: str=None) -> str:
+def tokens_to_rouge_output(tokens: List[str], newline: str='<P>') -> str:
   """Join output `tokens` for ROUGE evaluation."""
   tokens = filter(lambda t: t not in not_for_output, tokens)
   tokens = [non_word_char_in_word.sub("", t) for t in tokens]  # "n't" => "nt"

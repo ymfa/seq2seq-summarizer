@@ -45,6 +45,8 @@ class Params:
   val_data_path: Optional[str] = 'data/sent.val.txt'
   max_src_len: int = 80
   max_tgt_len: int = 25
+  truncate_src: bool = True  # truncate to max_src_len? if false, drop example if too long
+  truncate_tgt: bool = True  # truncate to max_tgt_len? if false, drop example if too long
 
   # Saving model automatically during training
   model_path_prefix: Optional[str] = 'checkpoints/ml'
