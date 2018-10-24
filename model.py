@@ -4,8 +4,8 @@ import torch.nn.functional as F
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 import random
 from params import Params
-from utils import Vocab
-from typing import Union
+from utils import Vocab, Hypothesis, word_detector
+from typing import Union, List
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -194,20 +194,19 @@ class Seq2SeqOutput(object):
 
 class Seq2Seq(nn.Module):
 
-  def __init__(self, vocab: Vocab, params: Params, max_output_length=None):
+  def __init__(self, vocab: Vocab, params: Params, max_dec_steps=None):
     """
-    :param vocab: only for accessing vocab info (special tokens and vocab size)
+    :param vocab: mainly for info about special tokens and vocab size
     :param params: model hyper-parameters
-    :param max_output_length: max num of decoder steps if not hitting SOS (only effective at test
-                              time, as during training the num of steps is determined by the
-                              `target_tensor`); it is safe to change `self.max_output_length` as
-                              it network architecture is independent of src/tgt seq lengths
+    :param max_dec_steps: max num of decoding steps (only effective at test time, as during
+                          training the num of steps is determined by the `target_tensor`); it is
+                          safe to change `self.max_dec_steps` as the network architecture is
+                          independent of src/tgt seq lengths
 
     Create the seq2seq model; its encoder and decoder will be created automatically.
     """
     super(Seq2Seq, self).__init__()
-    self.SOS = vocab.SOS
-    self.UNK = vocab.UNK
+    self.vocab = vocab
     self.vocab_size = len(vocab)
     if vocab.embeddings is not None:
       self.embed_size = vocab.embeddings.shape[1]
@@ -218,8 +217,7 @@ class Seq2Seq(nn.Module):
     else:
       self.embed_size = params.embed_size
       embedding_weights = None
-    self.max_output_length = \
-      params.max_tgt_len + 1 if max_output_length is None else max_output_length
+    self.max_dec_steps = params.max_tgt_len + 1 if max_dec_steps is None else max_dec_steps
     self.enc_attn = params.enc_attn
     self.enc_attn_cover = params.enc_attn_cover
     self.dec_attn = params.dec_attn
@@ -243,9 +241,19 @@ class Seq2Seq(nn.Module):
     """Replace any OOV index in `tensor` with UNK"""
     if ext_vocab_size and ext_vocab_size > self.vocab_size:
       result = tensor.clone()
-      result[tensor >= self.vocab_size] = self.UNK
+      result[tensor >= self.vocab_size] = self.vocab.UNK
       return result
     return tensor
+
+  def get_coverage_vector(self, enc_attn_weights):
+    """Combine the past attention weights into one vector"""
+    if self.cover_func == 'max':
+      coverage_vector, _ = torch.max(torch.cat(enc_attn_weights), dim=0)
+    elif self.cover_func == 'sum':
+      coverage_vector = torch.sum(torch.cat(enc_attn_weights), dim=0)
+    else:
+      raise ValueError('Unrecognized cover_func: ' + self.cover_func)
+    return coverage_vector
 
   def forward(self, input_tensor, target_tensor=None, input_lengths=None, criterion=None, *,
               forcing_ratio=0, partial_forcing=True, ext_vocab_size=None, sample=False,
@@ -276,7 +284,7 @@ class Seq2Seq(nn.Module):
       visualize = False  # nothing to visualize
 
     if target_tensor is None:
-      target_length = self.max_output_length
+      target_length = self.max_dec_steps
     else:
       target_length = target_tensor.size(0)
 
@@ -312,13 +320,17 @@ class Seq2Seq(nn.Module):
       if self.pointer:
         r.ptr_probs = torch.zeros(target_length, batch_size)
 
-    decoder_input = torch.tensor([self.SOS] * batch_size, device=DEVICE)
+    decoder_input = torch.tensor([self.vocab.SOS] * batch_size, device=DEVICE)
     decoder_hidden = encoder_hidden
     decoder_states = []
-    enc_attn_weights, coverage_vector = [], None
+    enc_attn_weights = []
 
     for di in range(target_length):
       decoder_embedded = self.embedding(self.filter_oov(decoder_input, ext_vocab_size))
+      if enc_attn_weights:
+        coverage_vector = self.get_coverage_vector(enc_attn_weights)
+      else:
+        coverage_vector = None
       decoder_output, decoder_hidden, dec_enc_attn, dec_prob_ptr = \
         self.decoder(decoder_embedded, decoder_hidden, encoder_outputs,
                      torch.cat(decoder_states) if decoder_states else None, coverage_vector,
@@ -345,16 +357,9 @@ class Seq2Seq(nn.Module):
         r.loss += criterion(decoder_output, gold_standard)
       # update coverage vector and compute coverage loss
       if self.enc_attn_cover or (criterion and self.cover_loss > 0):
-        if enc_attn_weights:
-          if self.cover_func == 'max':
-            coverage_vector, _ = torch.max(torch.cat(enc_attn_weights), dim=0)
-          elif self.cover_func == 'sum':
-            coverage_vector = torch.sum(torch.cat(enc_attn_weights), dim=0)
-          else:
-            raise ValueError('Unrecognized cover_func: ' + self.cover_func)
-          if criterion and self.cover_loss > 0:
-            coverage_loss = torch.sum(torch.min(coverage_vector, dec_enc_attn)) / batch_size
-            r.loss += self.cover_loss * coverage_loss
+        if coverage_vector is not None and criterion and self.cover_loss > 0:
+          coverage_loss = torch.sum(torch.min(coverage_vector, dec_enc_attn)) / batch_size
+          r.loss += self.cover_loss * coverage_loss
         enc_attn_weights.append(dec_enc_attn.unsqueeze(0))
       # save data for visualization
       if visualize:
@@ -368,3 +373,108 @@ class Seq2Seq(nn.Module):
         decoder_input = top_idx
     
     return r
+
+  def beam_search(self, input_tensor, input_lengths=None, ext_vocab_size=None, beam_size=4, *,
+                  min_out_len=1, max_out_len=None, len_in_words=True) -> List[Hypothesis]:
+    """
+    :param input_tensor: tensor of word indices, (src seq len, batch size); for now, batch size has
+                         to be 1
+    :param input_lengths: see explanation in `EncoderRNN`
+    :param ext_vocab_size: see explanation in `DecoderRNN`
+    :param beam_size: the beam size
+    :param min_out_len: required minimum output length
+    :param max_out_len: required maximum output length (if None, use the model's own value)
+    :param len_in_words: if True, count output length in words instead of tokens (i.e. do not count
+                         punctuations)
+    :return: list of the best decoded sequences, in descending order of probability
+
+    Use beam search to generate summaries.
+    """
+    batch_size = input_tensor.size(1)
+    assert batch_size == 1
+    if max_out_len is None:
+      max_out_len = self.max_dec_steps - 1  # max_out_len doesn't count EOS
+
+    # encode
+    encoder_hidden = self.encoder.init_hidden(batch_size)
+    # encoder_embedded: (input len, batch size, embed size)
+    encoder_embedded = self.embedding(self.filter_oov(input_tensor, ext_vocab_size))
+    encoder_outputs, encoder_hidden = \
+      self.encoder(encoder_embedded, encoder_hidden, input_lengths)
+    # turn batch size from 1 to beam size (by repeating)
+    # if we want dynamic batch size, the following must be created for all possible batch sizes
+    encoder_outputs = encoder_outputs.expand(-1, beam_size, -1).contiguous()
+    input_tensor = input_tensor.expand(-1, beam_size).contiguous()
+
+    # decode
+    hypos = [Hypothesis([self.vocab.SOS], [], encoder_hidden, [], [], 1)]
+    complete_results = []
+    step = 0
+    while hypos and step < 2 * max_out_len:  # prevent infinitely generating punctuations
+      # make batch size equal to beam size (n_hypos <= beam size)
+      n_hypos = len(hypos)
+      if n_hypos < beam_size:
+        hypos.extend(hypos[-1] for _ in range(beam_size - n_hypos))
+      # assemble existing hypotheses into a batch
+      decoder_input = torch.tensor([h.tokens[-1] for h in hypos], device=DEVICE)
+      decoder_hidden = torch.cat([h.dec_hidden for h in hypos], 1)
+      if self.dec_attn:  # dim 0 is decoding step, dim 1 is beam batch
+        decoder_states = torch.cat([torch.cat(h.dec_states, 0) for h in hypos], 1)
+      else:
+        decoder_states = None
+      if self.enc_attn_cover:
+        enc_attn_weights = [torch.cat([h.enc_attn_weights[i] for h in hypos], 1)
+                            for i in range(step)]
+      else:
+        enc_attn_weights = []
+      if enc_attn_weights:
+        coverage_vector = self.get_coverage_vector(enc_attn_weights)  # shape: (beam size, src len)
+      else:
+        coverage_vector = None
+      # run the decoder over the assembled batch
+      decoder_embedded = self.embedding(self.filter_oov(decoder_input, ext_vocab_size))
+      decoder_output, decoder_hidden, dec_enc_attn, dec_prob_ptr = \
+        self.decoder(decoder_embedded, decoder_hidden, encoder_outputs,
+                     decoder_states, coverage_vector,
+                     encoder_word_idx=input_tensor, ext_vocab_size=ext_vocab_size)
+      top_v, top_i = decoder_output.data.topk(beam_size)  # shape of both: (beam size, beam size)
+      # create new hypotheses
+      new_hypos = []
+      for in_idx in range(n_hypos):
+        for out_idx in range(beam_size):
+          new_tok = top_i[in_idx][out_idx].item()
+          new_prob = top_v[in_idx][out_idx].item()
+          if len_in_words:
+            if new_tok < 3:
+              non_word = True
+            elif new_tok < self.vocab_size:
+              token_str = self.vocab[new_tok]
+              non_word = word_detector.search(token_str) is None or token_str == '<P>'
+            else:  # OOV is assumed to be word-only, not punctuation
+              non_word = False
+          else:
+            non_word = new_tok == self.vocab.EOS  # only SOS & EOS don't count
+          new_hypo = hypos[in_idx].create_next(new_tok, new_prob,
+                                               decoder_hidden[0][in_idx].unsqueeze(0).unsqueeze(0),
+                                               self.dec_attn,
+                                               dec_enc_attn[in_idx].unsqueeze(0).unsqueeze(0)
+                                               if dec_enc_attn is not None else None, non_word)
+          new_hypos.append(new_hypo)
+      # process the new hypotheses
+      new_hypos = sorted(new_hypos, key=lambda h: -h.avg_log_prob)
+      hypos = []
+      new_complete_results = []
+      for nh in new_hypos:
+        if nh.tokens[-1] == self.vocab.EOS:  # a complete hypothesis
+          if len(new_complete_results) < beam_size and min_out_len <= len(nh) <= max_out_len:
+            new_complete_results.append(nh)
+        elif len(hypos) < beam_size and len(nh) <= max_out_len:  # an incomplete hypothesis
+          hypos.append(nh)
+        if len(hypos) >= beam_size and len(new_complete_results) >= beam_size:
+          break  # neither of the lists accept new items
+      complete_results.extend(new_complete_results)
+      step += 1
+    if complete_results:
+      return sorted(complete_results, key=lambda h: -h.avg_log_prob)[:beam_size]
+    else:
+      return hypos

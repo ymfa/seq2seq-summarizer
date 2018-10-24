@@ -3,7 +3,7 @@ from typing import Optional
 
 class Params:
   # Model architecture
-  vocab_size: int = 15000
+  vocab_size: int = 30000
   hidden_size: int = 50  # of the encoder; decoder size is doubled if encoder is bidi
   embed_size: int = 100
   enc_bidi: bool = True
@@ -25,15 +25,18 @@ class Params:
   dec_out_dropout: float = 0
 
   # Training
+  optimizer: str = 'adam'  # adam or adagrad
   lr: float = 0.001  # learning rate
+  adagrad_accumulator: float = 0.1
   batch_size: int = 128
-  n_batches: int = 500  # how many batches per epoch
+  n_batches: int = 1000  # how many batches per epoch
   val_batch_size: int = 128
-  n_val_batches: int = 50  # how many validation batches per epoch
-  n_epochs: int = 15
+  n_val_batches: int = 10  # how many validation batches per epoch
+  n_epochs: int = 75
   pack_seq: bool = True  # use packed sequence to skip PAD inputs?
   forcing_ratio: float = 0.5  # percentage of using teacher forcing
   partial_forcing: bool = True  # in a seq, can some steps be teacher forced and some not?
+  grad_norm: float = 2  # use gradient clipping if > 0; max gradient norm
   # note: enabling reinforcement learning can significantly slow down training
   rl_ratio: float = 0  # use mixed objective if > 0; ratio of RL in the loss function
   rl_ratio_power: float = 1  # increase rl_ratio by **= rl_ratio_power after each epoch; (0, 1]
@@ -41,13 +44,22 @@ class Params:
 
   # Data
   embed_file: Optional[str] = 'data/.vector_cache/glove.6B.100d.txt'  # use pre-trained embeddings
-  data_path: str = 'data/sent.txt'
-  val_data_path: Optional[str] = 'data/sent.val.txt'
-  max_src_len: int = 80
-  max_tgt_len: int = 25
+  data_path: str = 'data/cnndm.gz'
+  val_data_path: Optional[str] = 'data/cnndm.val.gz'
+  max_src_len: int = 400  # exclusive of special tokens such as EOS
+  max_tgt_len: int = 100  # exclusive of special tokens such as EOS
   truncate_src: bool = True  # truncate to max_src_len? if false, drop example if too long
   truncate_tgt: bool = True  # truncate to max_tgt_len? if false, drop example if too long
 
   # Saving model automatically during training
-  model_path_prefix: Optional[str] = 'checkpoints/ml'
+  model_path_prefix: Optional[str] = 'checkpoints/cnndm'
   keep_every_epoch: bool = False  # save all epochs, or only the best and the latest one?
+
+  # Testing
+  beam_size: int = 4
+  min_out_len: int = 1
+  max_out_len: Optional[int] = None
+  out_len_in_words: bool = True
+  test_data_path: str = 'data/cnndm.test.gz'
+  test_sample_ratio: float = 1  # what portion of the test data is used? (1 for all data)
+  test_save_results: bool = True

@@ -3,23 +3,26 @@ import torch.nn as nn
 import math
 import os
 from torch import optim
+from torch.nn.utils import clip_grad_norm_
 from tqdm import tqdm
-from utils import Dataset, show_plot, Vocab
+from utils import Dataset, show_plot, Vocab, Batch
 from model import Seq2Seq, DEVICE
 from params import Params
 from test import eval_batch, eval_batch_output
 
 
-def train_batch(batch, model, criterion, optimizer, *, pack_seq=True, forcing_ratio=0.5,
-                partial_forcing=True, rl_ratio: float=0, vocab=None):
-  examples, input_tensor, target_tensor, input_lengths, oov_dict = batch
+def train_batch(batch: Batch, model: Seq2Seq, criterion, optimizer, *,
+                pack_seq=True, forcing_ratio=0.5, partial_forcing=True,
+                rl_ratio: float=0, vocab=None, grad_norm: float=0):
   if not pack_seq:
     input_lengths = None
+  else:
+    input_lengths = batch.input_lengths
 
   optimizer.zero_grad()
-  input_tensor = input_tensor.to(DEVICE)
-  target_tensor = target_tensor.to(DEVICE)
-  ext_vocab_size = oov_dict['size'] if oov_dict is not None else None
+  input_tensor = batch.input_tensor.to(DEVICE)
+  target_tensor = batch.target_tensor.to(DEVICE)
+  ext_vocab_size = batch.ext_vocab_size
 
   out = model(input_tensor, target_tensor, input_lengths, criterion,
               forcing_ratio=forcing_ratio, partial_forcing=partial_forcing,
@@ -31,7 +34,7 @@ def train_batch(batch, model, criterion, optimizer, *, pack_seq=True, forcing_ra
                        ext_vocab_size=ext_vocab_size)
     baseline_out = model(input_tensor, saved_out=out, visualize=False,
                          ext_vocab_size=ext_vocab_size)
-    scores = eval_batch_output([ex.tgt for ex in examples], vocab, oov_dict,
+    scores = eval_batch_output([ex.tgt for ex in batch.examples], vocab, batch.oov_dict,
                                sample_out.decoded_tokens, baseline_out.decoded_tokens)
     greedy_rouge = scores[1]['l_f']
     neg_reward = greedy_rouge - scores[0]['l_f']
@@ -43,6 +46,8 @@ def train_batch(batch, model, criterion, optimizer, *, pack_seq=True, forcing_ra
     greedy_rouge = None
 
   loss.backward()
+  if grad_norm > 0:
+    clip_grad_norm_(model.parameters(), grad_norm)
   optimizer.step()
 
   target_length = target_tensor.size(0)
@@ -63,7 +68,11 @@ def train(train_generator, vocab: Vocab, model: Seq2Seq, params: Params, valid_g
   print("Training %d trainable parameters..." % total_parameters)
   model.to(DEVICE)
   if saved_state is None:
-    optimizer = optim.Adam(model.parameters(), lr=params.lr)
+    if params.optimizer == 'adagrad':
+      optimizer = optim.Adagrad(model.parameters(), lr=params.lr,
+                                initial_accumulator_value=params.adagrad_accumulator)
+    else:
+      optimizer = optim.Adam(model.parameters(), lr=params.lr)
     past_epochs = 0
   else:
     optimizer = saved_state['optimizer']
@@ -83,7 +92,7 @@ def train(train_generator, vocab: Vocab, model: Seq2Seq, params: Params, valid_g
       loss, metric = train_batch(batch, model, criterion, optimizer, pack_seq=params.pack_seq,
                                  forcing_ratio=params.forcing_ratio,
                                  partial_forcing=params.partial_forcing,
-                                 rl_ratio=rl_ratio, vocab=vocab)
+                                 rl_ratio=rl_ratio, vocab=vocab, grad_norm=params.grad_norm)
 
       epoch_loss += float(loss)
       epoch_avg_loss = epoch_loss / batch_count
@@ -160,6 +169,7 @@ def train(train_generator, vocab: Vocab, model: Seq2Seq, params: Params, valid_g
 
 if __name__ == "__main__":
   import argparse
+  import typing
 
   parser = argparse.ArgumentParser(description='Train the seq2seq abstractive summarizer.')
   parser.add_argument('--resume_from', type=str, metavar='R',
@@ -184,18 +194,24 @@ if __name__ == "__main__":
         arg_name = arg_text[2:]
       else:
         arg_curr_value = getattr(p, arg_name)
-        arg_type = type(arg_curr_value)
-        if arg_type is bool:
-          arg_new_value = arg_text.lower() == 'true'
-        elif arg_type is int:
-          try:
-            arg_new_value = int(arg_text)
-          except ValueError:
-            arg_new_value = float(arg_text)
+        if arg_text.lower() == 'none':
+          arg_new_value = None
+        elif arg_text.lower() == 'true':
+          arg_new_value = True
+        elif arg_text.lower() == 'false':
+          arg_new_value = False
         else:
+          arg_type = Params.__annotations__[arg_name]
+          if type(arg_type) is not type:  # support only Optional[T], where T is a basic type
+            assert arg_type.__origin__ is typing.Union
+            arg_types = [t for t in arg_type.__args__ if t is not type(None)]
+            assert len(arg_types) == 1
+            arg_type = arg_types[0]
+            assert type(arg_type) is type
           arg_new_value = arg_type(arg_text)
         setattr(p, arg_name, arg_new_value)
-        print("Hyper-parameter %s = %s (was %s)" % (arg_name, arg_new_value, arg_curr_value))
+        print("Hyper-parameter %s = %s %s (was %s %s)" %
+              (arg_name, type(arg_new_value), arg_new_value, type(arg_curr_value), arg_curr_value))
         arg_name = None
     if arg_name is not None:
       print("Warning: Argument %s lacks a value and is ignored." % arg_name)

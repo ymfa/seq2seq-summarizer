@@ -6,7 +6,7 @@ from multiprocessing.dummy import Pool
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
-from typing import NamedTuple, List, Callable, Dict
+from typing import NamedTuple, List, Callable, Dict, Tuple, Optional
 from collections import Counter
 from random import shuffle
 import torch
@@ -81,9 +81,43 @@ class Vocab(object):
 class Example(NamedTuple):
   src: List[str]
   tgt: List[str]
-  src_len: int
-  tgt_len: int
+  src_len: int  # inclusive of EOS, so that it corresponds to tensor shape
+  tgt_len: int  # inclusive of EOS, so that it corresponds to tensor shape
 
+
+class OOVDict(object):
+
+  def __init__(self, base_oov_idx):
+    self.word2index = {}  # type: Dict[Tuple[int, str], int]
+    self.index2word = {}  # type: Dict[Tuple[int, int], str]
+    self.next_index = {}  # type: Dict[int, int]
+    self.base_oov_idx = base_oov_idx
+    self.ext_vocab_size = base_oov_idx
+
+  def add_word(self, idx_in_batch, word) -> int:
+    key = (idx_in_batch, word)
+    index = self.word2index.get(key)
+    if index is not None: return index
+    index = self.next_index.get(idx_in_batch, self.base_oov_idx)
+    self.next_index[idx_in_batch] = index + 1
+    self.word2index[key] = index
+    self.index2word[(idx_in_batch, index)] = word
+    self.ext_vocab_size = max(self.ext_vocab_size, index + 1)
+    return index
+
+
+class Batch(NamedTuple):
+  examples: List[Example]
+  input_tensor: Optional[torch.Tensor]
+  target_tensor: Optional[torch.Tensor]
+  input_lengths: Optional[List[int]]
+  oov_dict: Optional[OOVDict]
+
+  @property
+  def ext_vocab_size(self):
+    if self.oov_dict is not None:
+      return self.oov_dict.ext_vocab_size
+    return None
 
 def simple_tokenizer(text: str, lower: bool=False, newline: str=None) -> List[str]:
   """Split an already tokenized input `text`."""
@@ -138,10 +172,7 @@ class Dataset(object):
     filename += '.vocab'
     if os.path.isfile(filename):
       vocab = torch.load(filename)
-      if vocab.embeddings is None:
-        print("Vocabulary loaded, %d words." % len(vocab))
-      else:
-        print("Vocabulary with pre-trained embeddings loaded, %d words." % len(vocab))
+      print("Vocabulary loaded, %d words." % len(vocab))
     else:
       print("Building vocabulary...", end=' ', flush=True)
       vocab = Vocab()
@@ -151,12 +182,11 @@ class Dataset(object):
         if tgt:
           vocab.add_words(example.tgt)
       vocab.trim(vocab_size=vocab_size)
-      if embed_file:
-        count = vocab.load_embeddings(embed_file)
-        print("%d words, %d pre-trained embeddings." % (len(vocab), count))
-      else:
-        print("%d words." % len(vocab))
+      print("%d words." % len(vocab))
       torch.save(vocab, filename)
+    if embed_file:
+      count = vocab.load_embeddings(embed_file)
+      print("%d pre-trained embeddings loaded." % count)
     return vocab
 
   def generator(self, batch_size: int, src_vocab: Vocab=None, tgt_vocab: Vocab=None,
@@ -171,9 +201,9 @@ class Dataset(object):
         ptr = 0
       examples = self.pairs[ptr:ptr + batch_size]
       ptr += batch_size
+      src_tensor, tgt_tensor = None, None
+      lengths, oov_dict = None, None
       if src_vocab or tgt_vocab:
-        src_tensor, tgt_tensor = None, None
-        lengths, oov_dict = None, None
         # initialize tensors
         if src_vocab:
           examples.sort(key=lambda x: -x.src_len)
@@ -181,38 +211,56 @@ class Dataset(object):
           max_src_len = lengths[0]
           src_tensor = torch.zeros(max_src_len, batch_size, dtype=torch.long)
           if ext_vocab:
-            oov_dict = {}
-            ext_vocab_size = base_oov_idx
+            oov_dict = OOVDict(base_oov_idx)
         if tgt_vocab:
           max_tgt_len = max(x.tgt_len for x in examples)
           tgt_tensor = torch.zeros(max_tgt_len, batch_size, dtype=torch.long)
         # fill up tensors by word indices
         for i, example in enumerate(examples):
           if src_vocab:
-            if ext_vocab:
-              next_oov_idx = base_oov_idx  # reset oov index for each example in a batch
             for j, word in enumerate(example.src):
               idx = src_vocab[word]
               if ext_vocab and idx == src_vocab.UNK:
-                idx = next_oov_idx
-                oov_dict[(i, word)] = idx
-                next_oov_idx += 1
+                idx = oov_dict.add_word(i, word)
               src_tensor[j, i] = idx
             src_tensor[example.src_len - 1, i] = src_vocab.EOS
           if tgt_vocab:
             for j, word in enumerate(example.tgt):
               idx = tgt_vocab[word]
               if ext_vocab and idx == src_vocab.UNK:
-                idx = oov_dict.get((i, word), idx)
+                idx = oov_dict.word2index.get((i, word), idx)
               tgt_tensor[j, i] = idx
             tgt_tensor[example.tgt_len - 1, i] = tgt_vocab.EOS
-          if ext_vocab:
-            ext_vocab_size = max(ext_vocab_size, next_oov_idx)
-        if ext_vocab:
-          oov_dict['size'] = ext_vocab_size
-        yield examples, src_tensor, tgt_tensor, lengths, oov_dict
-      else:
-        yield examples
+      yield Batch(examples, src_tensor, tgt_tensor, lengths, oov_dict)
+
+
+class Hypothesis(object):
+
+  def __init__(self, tokens, log_probs, dec_hidden, dec_states, enc_attn_weights, num_non_words):
+    self.tokens = tokens  # type: List[int]
+    self.log_probs = log_probs  # type: List[float]
+    self.dec_hidden = dec_hidden  # shape: (1, 1, hidden_size)
+    self.dec_states = dec_states  # list of dec_hidden
+    self.enc_attn_weights = enc_attn_weights  # list of shape: (1, 1, src_len)
+    self.num_non_words = num_non_words  # type: int
+
+  def __repr__(self):
+    return repr(self.tokens)
+
+  def __len__(self):
+    return len(self.tokens) - self.num_non_words
+
+  @property
+  def avg_log_prob(self):
+    return sum(self.log_probs) / len(self.log_probs)
+
+  def create_next(self, token, log_prob, dec_hidden, add_dec_states, enc_attn, non_word):
+    return Hypothesis(tokens=self.tokens + [token], log_probs=self.log_probs + [log_prob],
+                      dec_hidden=dec_hidden, dec_states=
+                      self.dec_states + [dec_hidden] if add_dec_states else self.dec_states,
+                      enc_attn_weights=self.enc_attn_weights + [enc_attn]
+                      if enc_attn is not None else self.enc_attn_weights,
+                      num_non_words=self.num_non_words + 1 if non_word else self.num_non_words)
 
 
 def show_plot(loss, step=1, val_loss=None, val_metric=None, val_step=1, file_prefix=None):
@@ -255,19 +303,41 @@ def show_attention_map(src_words, pred_words, attention, pointer_ratio=None):
 
 
 non_word_char_in_word = re.compile(r"(?<=\w)\W(?=\w)")
+word_detector = re.compile('\w')
 
 not_for_output = {'<PAD>', '<SOS>', '<EOS>', '<UNK>'}
 
-def tokens_to_rouge_output(tokens: List[str], newline: str='<P>') -> str:
+def format_tokens(tokens: List[str], newline: str= '<P>', for_rouge: bool=False) -> str:
   """Join output `tokens` for ROUGE evaluation."""
   tokens = filter(lambda t: t not in not_for_output, tokens)
-  tokens = [non_word_char_in_word.sub("", t) for t in tokens]  # "n't" => "nt"
+  if for_rouge:
+    tokens = [non_word_char_in_word.sub("", t) for t in tokens]  # "n't" => "nt"
   if newline is None:
     s = ' '.join(tokens)
   else:  # replace newline tokens by newlines
-    s = ' ' + ' '.join(tokens) + ' '
-    s = s.replace(' ' + newline + ' ', '\n').strip(' ')
+    lines, line = [], []
+    for tok in tokens:
+      if tok == newline:
+        if line: lines.append(" ".join(line))
+        line = []
+      else:
+        line.append(tok)
+    if line: lines.append(" ".join(line))
+    s = '\n'.join(lines)
   return s
+
+def format_rouge_scores(rouge_result: Dict[str, float]) -> str:
+  lines = []
+  line, prev_metric = [], None
+  for key in sorted(rouge_result.keys()):
+    metric = key.rsplit("_", maxsplit=1)[0]
+    if metric != prev_metric and prev_metric is not None:
+      lines.append("\t".join(line))
+      line = []
+    line.append("%s %s" % (key, rouge_result[key]))
+    prev_metric = metric
+  lines.append("\t".join(line))
+  return "\n".join(lines)
 
 
 this_dir = os.path.dirname(os.path.abspath(__file__))
@@ -287,10 +357,10 @@ def rouge(target: List[List[str]], *predictions: List[List[str]]) -> List[Dict[s
         sys_file = 'sys%d_%d.spl' % (j, i)
         sys_entries.append('\n    <P ID="%d">%s</P>' % (j, sys_file))
         with open(os.path.join(folder, sys_file), 'wt') as f:
-          f.write(tokens_to_rouge_output(pred_docs[i]))
+          f.write(format_tokens(pred_docs[i], for_rouge=True))
       ref_file = 'ref_%d.spl' % i
       with open(os.path.join(folder, ref_file), 'wt') as f:
-        f.write(tokens_to_rouge_output(tgt_tokens))
+        f.write(format_tokens(tgt_tokens, for_rouge=True))
       eval_entry = """
 <EVAL ID="{1}">
   <PEER-ROOT>{0}</PEER-ROOT>
