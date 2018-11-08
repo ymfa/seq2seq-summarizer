@@ -12,7 +12,7 @@ from test import eval_batch, eval_batch_output
 
 
 def train_batch(batch: Batch, model: Seq2Seq, criterion, optimizer, *,
-                pack_seq=True, forcing_ratio=0.5, partial_forcing=True,
+                pack_seq=True, forcing_ratio=0.5, partial_forcing=True, sample=False,
                 rl_ratio: float=0, vocab=None, grad_norm: float=0):
   if not pack_seq:
     input_lengths = None
@@ -25,7 +25,7 @@ def train_batch(batch: Batch, model: Seq2Seq, criterion, optimizer, *,
   ext_vocab_size = batch.ext_vocab_size
 
   out = model(input_tensor, target_tensor, input_lengths, criterion,
-              forcing_ratio=forcing_ratio, partial_forcing=partial_forcing,
+              forcing_ratio=forcing_ratio, partial_forcing=partial_forcing, sample=sample,
               ext_vocab_size=ext_vocab_size)
 
   if rl_ratio > 0:
@@ -60,7 +60,6 @@ def train(train_generator, vocab: Vocab, model: Seq2Seq, params: Params, valid_g
   plot_points_per_epoch = max(math.log(params.n_batches, 1.6), 1.)
   plot_every = round(params.n_batches / plot_points_per_epoch)
   plot_losses, cached_losses = [], []
-  total_batch_count = 0
   plot_val_losses, plot_val_metrics = [], []
 
   total_parameters = sum(parameter.numel() for parameter in model.parameters()
@@ -74,9 +73,11 @@ def train(train_generator, vocab: Vocab, model: Seq2Seq, params: Params, valid_g
     else:
       optimizer = optim.Adam(model.parameters(), lr=params.lr)
     past_epochs = 0
+    total_batch_count = 0
   else:
     optimizer = saved_state['optimizer']
     past_epochs = saved_state['epoch']
+    total_batch_count = saved_state['total_batch_count']
   criterion = nn.NLLLoss(ignore_index=vocab.PAD)
   best_avg_loss, best_epoch_id = float("inf"), None
 
@@ -88,10 +89,23 @@ def train(train_generator, vocab: Vocab, model: Seq2Seq, params: Params, valid_g
     model.train()
 
     for batch_count in prog_bar:  # training batches
+      if params.forcing_decay_type:
+        if params.forcing_decay_type == 'linear':
+          forcing_ratio = max(0, params.forcing_ratio - params.forcing_decay * total_batch_count)
+        elif params.forcing_decay_type == 'exp':
+          forcing_ratio = params.forcing_ratio * (params.forcing_decay ** total_batch_count)
+        elif params.forcing_decay_type == 'sigmoid':
+          forcing_ratio = params.forcing_ratio * params.forcing_decay / (
+                  params.forcing_decay + math.exp(total_batch_count / params.forcing_decay))
+        else:
+          raise ValueError('Unrecognized forcing_decay_type: ' + params.forcing_decay_type)
+      else:
+        forcing_ratio = params.forcing_ratio
+
       batch = next(train_generator)
       loss, metric = train_batch(batch, model, criterion, optimizer, pack_seq=params.pack_seq,
-                                 forcing_ratio=params.forcing_ratio,
-                                 partial_forcing=params.partial_forcing,
+                                 forcing_ratio=forcing_ratio,
+                                 partial_forcing=params.partial_forcing, sample=params.sample,
                                  rl_ratio=rl_ratio, vocab=vocab, grad_norm=params.grad_norm)
 
       epoch_loss += float(loss)
@@ -104,7 +118,8 @@ def train(train_generator, vocab: Vocab, model: Seq2Seq, params: Params, valid_g
         prog_bar.set_postfix(loss='%g' % epoch_avg_loss)
 
       cached_losses.append(loss)
-      if (total_batch_count + batch_count) % plot_every == 0:
+      total_batch_count += 1
+      if total_batch_count % plot_every == 0:
         period_avg_loss = sum(cached_losses) / len(cached_losses)
         plot_losses.append(period_avg_loss)
         cached_losses = []
@@ -151,6 +166,7 @@ def train(train_generator, vocab: Vocab, model: Seq2Seq, params: Params, valid_g
       # save training status
       torch.save({
         'epoch': epoch_count,
+        'total_batch_count': total_batch_count,
         'train_avg_loss': epoch_avg_loss,
         'valid_avg_loss': valid_avg_loss,
         'valid_avg_metric': valid_avg_metric,
@@ -162,7 +178,6 @@ def train(train_generator, vocab: Vocab, model: Seq2Seq, params: Params, valid_g
     if rl_ratio > 0:
       params.rl_ratio **= params.rl_ratio_power
 
-    total_batch_count += params.n_batches
     show_plot(plot_losses, plot_every, plot_val_losses, plot_val_metrics, params.n_batches,
               params.model_path_prefix)
 

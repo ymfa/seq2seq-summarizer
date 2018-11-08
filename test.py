@@ -182,20 +182,23 @@ if __name__ == "__main__":
 
   # load model
   train_status = torch.load(p.model_path_prefix + ".train.pt")
-  filename = '%s.%02d.pt' % (p.model_path_prefix, train_status['best_epoch_so_far'])
+  filename = '%s.%02d.pt' % (p.model_path_prefix, train_status['epoch'])  # or 'best_epoch_so_far'
   m = torch.load(filename)  # use map_location='cpu' if you are testing a CUDA model using CPU
   print("Evaluating %s..." % filename)
 
-  # load vocab
-  filename, _ = os.path.splitext(p.data_path)
-  if p.vocab_size:
-    filename += ".%d" % p.vocab_size
-  filename += '.vocab'
-  v = torch.load(filename)
+  m.encoder.gru.flatten_parameters()
+  m.decoder.gru.flatten_parameters()
 
-  # fixes for models trained by a previous version of the summarizer
-  #m.vocab = v
-  #m.max_dec_steps = m.max_output_length
+  if hasattr(m, 'vocab'):
+    v = m.vocab
+  else:  # fixes for models trained by a previous version of the summarizer
+    filename, _ = os.path.splitext(p.data_path)
+    if p.vocab_size:
+      filename += ".%d" % p.vocab_size
+    filename += '.vocab'
+    v = torch.load(filename)
+    m.vocab = v
+    m.max_dec_steps = m.max_output_length
 
   d = Dataset(p.test_data_path)
   eval_bs(d, v, m, p)

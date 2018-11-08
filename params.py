@@ -34,9 +34,12 @@ class Params:
   n_val_batches: int = 10  # how many validation batches per epoch
   n_epochs: int = 75
   pack_seq: bool = True  # use packed sequence to skip PAD inputs?
-  forcing_ratio: float = 0.5  # percentage of using teacher forcing
+  forcing_ratio: float = 0.75  # initial percentage of using teacher forcing
   partial_forcing: bool = True  # in a seq, can some steps be teacher forced and some not?
-  grad_norm: float = 2  # use gradient clipping if > 0; max gradient norm
+  forcing_decay_type: Optional[str] = 'sigmoid'  # linear, exp, sigmoid, or None
+  forcing_decay: float = 1000
+  sample: bool = True  # are non-teacher forced inputs based on sampling or greedy selection?
+  grad_norm: float = 1  # use gradient clipping if > 0; max gradient norm
   # note: enabling reinforcement learning can significantly slow down training
   rl_ratio: float = 0  # use mixed objective if > 0; ratio of RL in the loss function
   rl_ratio_power: float = 1  # increase rl_ratio by **= rl_ratio_power after each epoch; (0, 1]

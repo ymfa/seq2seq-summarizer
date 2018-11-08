@@ -8,6 +8,7 @@ from utils import Vocab, Hypothesis, word_detector
 from typing import Union, List
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+eps = 1e-31
 
 
 class EncoderRNN(nn.Module):
@@ -131,7 +132,7 @@ class DecoderRNN(nn.Module):
       # energy and attention: (num encoder states, batch size, 1)
       enc_energy = self.enc_bilinear(hidden.expand_as(encoder_states).contiguous(), encoder_states)
       if self.enc_attn_cover and coverage_vector is not None:
-        enc_energy += self.cover_weight * torch.log(coverage_vector.transpose(0, 1).unsqueeze(2))
+        enc_energy += self.cover_weight * torch.log(coverage_vector.transpose(0, 1).unsqueeze(2) + eps)
       # transpose => (batch size, num encoder states, 1)
       enc_attn = F.softmax(enc_energy, dim=0).transpose(0, 1)
       if self.enc_attn:
@@ -171,7 +172,7 @@ class DecoderRNN(nn.Module):
       # add pointer probabilities to output
       ptr_output = enc_attn
       output.scatter_add_(1, encoder_word_idx.transpose(0, 1), prob_ptr * ptr_output)
-      if log_prob: output = torch.log(output)
+      if log_prob: output = torch.log(output + eps)
     else:
       if log_prob: output = F.log_softmax(logits, dim=1)
       else: output = F.softmax(logits, dim=1)
@@ -353,9 +354,9 @@ class Seq2Seq(nn.Module):
         else:
           gold_standard = target_tensor[di]
         if not log_prob:
-          decoder_output = torch.log(decoder_output)  # necessary for NLLLoss
+          decoder_output = torch.log(decoder_output + eps)  # necessary for NLLLoss
         r.loss += criterion(decoder_output, gold_standard)
-      # update coverage vector and compute coverage loss
+      # update attention history and compute coverage loss
       if self.enc_attn_cover or (criterion and self.cover_loss > 0):
         if coverage_vector is not None and criterion and self.cover_loss > 0:
           coverage_loss = torch.sum(torch.min(coverage_vector, dec_enc_attn)) / batch_size
