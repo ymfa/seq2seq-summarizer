@@ -13,7 +13,7 @@ from test import eval_batch, eval_batch_output
 
 def train_batch(batch: Batch, model: Seq2Seq, criterion, optimizer, *,
                 pack_seq=True, forcing_ratio=0.5, partial_forcing=True, sample=False,
-                rl_ratio: float=0, vocab=None, grad_norm: float=0):
+                rl_ratio: float=0, vocab=None, grad_norm: float=0, show_cover_loss=False):
   if not pack_seq:
     input_lengths = None
   else:
@@ -26,7 +26,7 @@ def train_batch(batch: Batch, model: Seq2Seq, criterion, optimizer, *,
 
   out = model(input_tensor, target_tensor, input_lengths, criterion,
               forcing_ratio=forcing_ratio, partial_forcing=partial_forcing, sample=sample,
-              ext_vocab_size=ext_vocab_size)
+              ext_vocab_size=ext_vocab_size, include_cover_loss=show_cover_loss)
 
   if rl_ratio > 0:
     assert vocab is not None
@@ -40,9 +40,12 @@ def train_batch(batch: Batch, model: Seq2Seq, criterion, optimizer, *,
     neg_reward = greedy_rouge - scores[0]['l_f']
     # if sample > baseline, the reward is positive (i.e. good exploration), rl_loss is negative
     rl_loss = neg_reward * sample_out.loss
+    rl_loss_value = neg_reward * sample_out.loss_value
     loss = (1 - rl_ratio) * out.loss + rl_ratio * rl_loss
+    loss_value = (1 - rl_ratio) * out.loss_value + rl_ratio * rl_loss_value
   else:
     loss = out.loss
+    loss_value = out.loss_value
     greedy_rouge = None
 
   loss.backward()
@@ -51,7 +54,7 @@ def train_batch(batch: Batch, model: Seq2Seq, criterion, optimizer, *,
   optimizer.step()
 
   target_length = target_tensor.size(0)
-  return loss.item() / target_length, greedy_rouge
+  return loss_value / target_length, greedy_rouge
 
 
 def train(train_generator, vocab: Vocab, model: Seq2Seq, params: Params, valid_generator=None,
@@ -106,7 +109,8 @@ def train(train_generator, vocab: Vocab, model: Seq2Seq, params: Params, valid_g
       loss, metric = train_batch(batch, model, criterion, optimizer, pack_seq=params.pack_seq,
                                  forcing_ratio=forcing_ratio,
                                  partial_forcing=params.partial_forcing, sample=params.sample,
-                                 rl_ratio=rl_ratio, vocab=vocab, grad_norm=params.grad_norm)
+                                 rl_ratio=rl_ratio, vocab=vocab, grad_norm=params.grad_norm,
+                                 show_cover_loss=params.show_cover_loss)
 
       epoch_loss += float(loss)
       epoch_avg_loss = epoch_loss / batch_count
@@ -131,7 +135,8 @@ def train(train_generator, vocab: Vocab, model: Seq2Seq, params: Params, valid_g
 
       for batch_count in prog_bar:
         batch = next(valid_generator)
-        loss, metric = eval_batch(batch, model, vocab, criterion, pack_seq=params.pack_seq)
+        loss, metric = eval_batch(batch, model, vocab, criterion, pack_seq=params.pack_seq,
+                                  show_cover_loss=params.show_cover_loss)
         valid_loss += loss
         valid_metric += metric
         valid_avg_loss = valid_loss / batch_count

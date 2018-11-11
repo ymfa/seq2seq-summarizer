@@ -27,8 +27,8 @@ def decode_batch_output(decoded_tokens, vocab: Vocab, oov_dict: OOVDict) -> List
   return decoded_batch
 
 
-def decode_batch(batch: Batch, model: Seq2Seq, vocab: Vocab, criterion=None, *, pack_seq=True) \
-        -> Tuple[List[List[str]], Seq2SeqOutput]:
+def decode_batch(batch: Batch, model: Seq2Seq, vocab: Vocab, criterion=None, *, pack_seq=True,
+                 show_cover_loss=False) -> Tuple[List[List[str]], Seq2SeqOutput]:
   """Test the `model` on the `batch`, return the decoded textual tokens and the Seq2SeqOutput."""
   if not pack_seq:
     input_lengths = None
@@ -41,11 +41,10 @@ def decode_batch(batch: Batch, model: Seq2Seq, vocab: Vocab, criterion=None, *, 
     else:
       target_tensor = batch.target_tensor.to(DEVICE)
     out = model(input_tensor, target_tensor, input_lengths, criterion,
-                ext_vocab_size=batch.ext_vocab_size)
+                ext_vocab_size=batch.ext_vocab_size, include_cover_loss=show_cover_loss)
     decoded_batch = decode_batch_output(out.decoded_tokens, vocab, batch.oov_dict)
-  if isinstance(out.loss, torch.Tensor):  # iff criterion was provided
-    target_length = batch.target_tensor.size(0)
-    out.loss = out.loss.item() / target_length
+  target_length = batch.target_tensor.size(0)
+  out.loss_value /= target_length
   return decoded_batch, out
 
 
@@ -63,14 +62,15 @@ def decode_one(*args, **kwargs):
   return decoded_doc, out
 
 
-def eval_batch(batch: Batch, model: Seq2Seq, vocab: Vocab, criterion=None, *, pack_seq=True) \
-        -> Tuple[float, float]:
+def eval_batch(batch: Batch, model: Seq2Seq, vocab: Vocab, criterion=None, *, pack_seq=True,
+               show_cover_loss=False) -> Tuple[float, float]:
   """Test the `model` on the `batch`, return the ROUGE score and the loss."""
-  decoded_batch, out = decode_batch(batch, model, vocab, criterion=criterion, pack_seq=pack_seq)
+  decoded_batch, out = decode_batch(batch, model, vocab, criterion=criterion, pack_seq=pack_seq,
+                                    show_cover_loss=show_cover_loss)
   examples = batch[0]
   gold_summaries = [ex.tgt for ex in examples]
   scores = rouge(gold_summaries, decoded_batch)
-  return out.loss, scores[0]['l_f']
+  return out.loss_value, scores[0]['l_f']
 
 
 def eval_batch_output(tgt_tensor_or_tokens: Union[torch.Tensor, List[List[str]]], vocab: Vocab,

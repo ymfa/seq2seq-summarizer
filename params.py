@@ -4,7 +4,8 @@ from typing import Optional
 class Params:
   # Model architecture
   vocab_size: int = 30000
-  hidden_size: int = 50  # of the encoder; decoder size is doubled if encoder is bidi
+  hidden_size: int = 100  # of the encoder; default decoder size is doubled if encoder is bidi
+  dec_hidden_size: Optional[int] = 100  # if set, a matrix will transform enc state into dec state
   embed_size: int = 100
   enc_bidi: bool = True
   enc_attn: bool = True  # decoder has attention over encoder states?
@@ -17,6 +18,7 @@ class Params:
   enc_attn_cover: bool = True  # provide coverage as input when computing enc attn?
   cover_func: str = 'max'  # how to aggregate previous attention distributions? sum or max
   cover_loss: float = 1  # add coverage loss if > 0; weight of coverage loss as compared to NLLLoss
+  show_cover_loss: bool = False  # include coverage loss in the loss shown in the progress bar?
 
   # Regularization
   enc_rnn_dropout: float = 0
@@ -28,10 +30,10 @@ class Params:
   optimizer: str = 'adam'  # adam or adagrad
   lr: float = 0.001  # learning rate
   adagrad_accumulator: float = 0.1
-  batch_size: int = 128
+  batch_size: int = 64
   n_batches: int = 1000  # how many batches per epoch
-  val_batch_size: int = 128
-  n_val_batches: int = 10  # how many validation batches per epoch
+  val_batch_size: int = 64
+  n_val_batches: int = 20  # how many validation batches per epoch
   n_epochs: int = 75
   pack_seq: bool = True  # use packed sequence to skip PAD inputs?
   forcing_ratio: float = 0.75  # initial percentage of using teacher forcing

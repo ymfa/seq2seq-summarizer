@@ -53,7 +53,7 @@ class DecoderRNN(nn.Module):
 
   def __init__(self, vocab_size, embed_size, hidden_size, *, enc_attn=True, dec_attn=True,
                enc_attn_cover=True, pointer=True, tied_embedding=None, out_embed_size=None,
-               in_drop: float=0, rnn_drop: float=0, out_drop: float=0):
+               in_drop: float=0, rnn_drop: float=0, out_drop: float=0, enc_hidden_size=None):
     super(DecoderRNN, self).__init__()
     self.vocab_size = vocab_size
     self.hidden_size = hidden_size
@@ -72,8 +72,9 @@ class DecoderRNN(nn.Module):
     self.gru = nn.GRU(embed_size, self.hidden_size, dropout=rnn_drop)
 
     if enc_attn:
-      self.enc_bilinear = nn.Bilinear(self.hidden_size, self.hidden_size, 1)
-      self.combined_size += self.hidden_size
+      if not enc_hidden_size: enc_hidden_size = self.hidden_size
+      self.enc_bilinear = nn.Bilinear(self.hidden_size, enc_hidden_size, 1)
+      self.combined_size += enc_hidden_size
       if enc_attn_cover:
         self.cover_weight = nn.Parameter(torch.rand(1))
 
@@ -104,7 +105,7 @@ class DecoderRNN(nn.Module):
     """
     :param embedded: (batch size, embed size)
     :param hidden: (1, batch size, decoder hidden size)
-    :param encoder_states: (src seq len, batch size, decoder hidden size), for attention mechanism
+    :param encoder_states: (src seq len, batch size, hidden size), for attention mechanism
     :param decoder_states: (past dec steps, batch size, hidden size), for attention mechanism
     :param encoder_word_idx: (src seq len, batch size), for pointer network
     :param ext_vocab_size: the dynamic vocab size, determined by the max num of OOV words contained
@@ -130,7 +131,10 @@ class DecoderRNN(nn.Module):
 
     if self.enc_attn or self.pointer:
       # energy and attention: (num encoder states, batch size, 1)
-      enc_energy = self.enc_bilinear(hidden.expand_as(encoder_states).contiguous(), encoder_states)
+      num_enc_steps = encoder_states.size(0)
+      enc_total_size = encoder_states.size(2)
+      enc_energy = self.enc_bilinear(hidden.expand(num_enc_steps, batch_size, -1).contiguous(),
+                                     encoder_states)
       if self.enc_attn_cover and coverage_vector is not None:
         enc_energy += self.cover_weight * torch.log(coverage_vector.transpose(0, 1).unsqueeze(2) + eps)
       # transpose => (batch size, num encoder states, 1)
@@ -138,8 +142,8 @@ class DecoderRNN(nn.Module):
       if self.enc_attn:
         # context: (batch size, encoder hidden size, 1)
         enc_context = torch.bmm(encoder_states.permute(1, 2, 0), enc_attn)
-        combined[:, offset:offset+self.hidden_size] = enc_context.squeeze(2)
-        offset += self.hidden_size
+        combined[:, offset:offset+enc_total_size] = enc_context.squeeze(2)
+        offset += enc_total_size
       enc_attn = enc_attn.squeeze(2)
 
     if self.dec_attn:
@@ -184,11 +188,13 @@ class Seq2SeqOutput(object):
 
   def __init__(self, encoder_outputs: torch.Tensor, encoder_hidden: torch.Tensor,
                decoded_tokens: torch.Tensor, loss: Union[torch.Tensor, float]=0,
-               enc_attn_weights: torch.Tensor=None, ptr_probs: torch.Tensor=None):
+               loss_value: float=0, enc_attn_weights: torch.Tensor=None,
+               ptr_probs: torch.Tensor=None):
     self.encoder_outputs = encoder_outputs
     self.encoder_hidden = encoder_hidden
     self.decoded_tokens = decoded_tokens  # (out seq len, batch size)
     self.loss = loss  # scalar
+    self.loss_value = loss_value  # float value, excluding coverage loss
     self.enc_attn_weights = enc_attn_weights  # (out seq len, batch size, src seq len)
     self.ptr_probs = ptr_probs  # (out seq len, batch size)
 
@@ -225,18 +231,24 @@ class Seq2Seq(nn.Module):
     self.pointer = params.pointer
     self.cover_loss = params.cover_loss
     self.cover_func = params.cover_func
+    enc_total_size = params.hidden_size * 2 if params.enc_bidi else params.hidden_size
+    if params.dec_hidden_size:
+      dec_hidden_size = params.dec_hidden_size
+      self.enc_dec_adapter = nn.Linear(enc_total_size, dec_hidden_size)
+    else:
+      dec_hidden_size = enc_total_size
+      self.enc_dec_adapter = None
 
     self.embedding = nn.Embedding(self.vocab_size, self.embed_size, padding_idx=vocab.PAD,
                                   _weight=embedding_weights)
     self.encoder = EncoderRNN(self.embed_size, params.hidden_size, params.enc_bidi,
                               rnn_drop=params.enc_rnn_dropout)
-    self.decoder = DecoderRNN(self.vocab_size, self.embed_size,
-                              params.hidden_size * 2 if params.enc_bidi else params.hidden_size,
+    self.decoder = DecoderRNN(self.vocab_size, self.embed_size, dec_hidden_size,
                               enc_attn=params.enc_attn, dec_attn=params.dec_attn,
                               pointer=params.pointer, out_embed_size=params.out_embed_size,
                               tied_embedding=self.embedding if params.tie_embed else None,
                               in_drop=params.dec_in_dropout, rnn_drop=params.dec_rnn_dropout,
-                              out_drop=params.dec_out_dropout)
+                              out_drop=params.dec_out_dropout, enc_hidden_size=enc_total_size)
 
   def filter_oov(self, tensor, ext_vocab_size):
     """Replace any OOV index in `tensor` with UNK"""
@@ -258,7 +270,8 @@ class Seq2Seq(nn.Module):
 
   def forward(self, input_tensor, target_tensor=None, input_lengths=None, criterion=None, *,
               forcing_ratio=0, partial_forcing=True, ext_vocab_size=None, sample=False,
-              saved_out: Seq2SeqOutput=None, visualize: bool=None) -> Seq2SeqOutput:
+              saved_out: Seq2SeqOutput=None, visualize: bool=None, include_cover_loss: bool=False)\
+          -> Seq2SeqOutput:
     """
     :param input_tensor: tensor of word indices, (src seq len, batch size)
     :param target_tensor: tensor of word indices, (tgt seq len, batch size)
@@ -273,6 +286,7 @@ class Seq2Seq(nn.Module):
                       be skipped and we reuse the encoder states saved in this object
     :param visualize: whether to return data for attention and pointer visualization; if None,
                       return if no `criterion` is provided
+    :param include_cover_loss: whether to include coverage loss in the returned `loss_value`
 
     Run the seq2seq model for training or testing.
     """
@@ -322,7 +336,10 @@ class Seq2Seq(nn.Module):
         r.ptr_probs = torch.zeros(target_length, batch_size)
 
     decoder_input = torch.tensor([self.vocab.SOS] * batch_size, device=DEVICE)
-    decoder_hidden = encoder_hidden
+    if self.enc_dec_adapter is None:
+      decoder_hidden = encoder_hidden
+    else:
+      decoder_hidden = self.enc_dec_adapter(encoder_hidden)
     decoder_states = []
     enc_attn_weights = []
 
@@ -355,12 +372,16 @@ class Seq2Seq(nn.Module):
           gold_standard = target_tensor[di]
         if not log_prob:
           decoder_output = torch.log(decoder_output + eps)  # necessary for NLLLoss
-        r.loss += criterion(decoder_output, gold_standard)
+        nll_loss = criterion(decoder_output, gold_standard)
+        r.loss += nll_loss
+        r.loss_value += nll_loss.item()
       # update attention history and compute coverage loss
       if self.enc_attn_cover or (criterion and self.cover_loss > 0):
         if coverage_vector is not None and criterion and self.cover_loss > 0:
-          coverage_loss = torch.sum(torch.min(coverage_vector, dec_enc_attn)) / batch_size
-          r.loss += self.cover_loss * coverage_loss
+          coverage_loss = torch.sum(torch.min(coverage_vector, dec_enc_attn)) / batch_size \
+                          * self.cover_loss
+          r.loss += coverage_loss
+          if include_cover_loss: r.loss_value += coverage_loss.item()
         enc_attn_weights.append(dec_enc_attn.unsqueeze(0))
       # save data for visualization
       if visualize:
@@ -402,13 +423,17 @@ class Seq2Seq(nn.Module):
     encoder_embedded = self.embedding(self.filter_oov(input_tensor, ext_vocab_size))
     encoder_outputs, encoder_hidden = \
       self.encoder(encoder_embedded, encoder_hidden, input_lengths)
+    if self.enc_dec_adapter is None:
+      decoder_hidden = encoder_hidden
+    else:
+      decoder_hidden = self.enc_dec_adapter(encoder_hidden)
     # turn batch size from 1 to beam size (by repeating)
     # if we want dynamic batch size, the following must be created for all possible batch sizes
     encoder_outputs = encoder_outputs.expand(-1, beam_size, -1).contiguous()
     input_tensor = input_tensor.expand(-1, beam_size).contiguous()
 
     # decode
-    hypos = [Hypothesis([self.vocab.SOS], [], encoder_hidden, [], [], 1)]
+    hypos = [Hypothesis([self.vocab.SOS], [], decoder_hidden, [], [], 1)]
     complete_results = []
     step = 0
     while hypos and step < 2 * max_out_len:  # prevent infinitely generating punctuations
