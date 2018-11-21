@@ -30,6 +30,8 @@ class Params:
   optimizer: str = 'adam'  # adam or adagrad
   lr: float = 0.001  # learning rate
   adagrad_accumulator: float = 0.1
+  lr_decay_step: int = 5  # decay lr every how many epochs?
+  lr_decay: Optional[float] = None  # decay lr by multiplying this factor
   batch_size: int = 64
   n_batches: int = 1000  # how many batches per epoch
   val_batch_size: int = 64
@@ -38,8 +40,8 @@ class Params:
   pack_seq: bool = True  # use packed sequence to skip PAD inputs?
   forcing_ratio: float = 0.75  # initial percentage of using teacher forcing
   partial_forcing: bool = True  # in a seq, can some steps be teacher forced and some not?
-  forcing_decay_type: Optional[str] = 'sigmoid'  # linear, exp, sigmoid, or None
-  forcing_decay: float = 1000
+  forcing_decay_type: Optional[str] = 'linear'  # linear, exp, sigmoid, or None
+  forcing_decay: float = 0.0001
   sample: bool = True  # are non-teacher forced inputs based on sampling or greedy selection?
   grad_norm: float = 1  # use gradient clipping if > 0; max gradient norm
   # note: enabling reinforcement learning can significantly slow down training

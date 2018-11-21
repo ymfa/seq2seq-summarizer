@@ -81,10 +81,15 @@ def train(train_generator, vocab: Vocab, model: Seq2Seq, params: Params, valid_g
     optimizer = saved_state['optimizer']
     past_epochs = saved_state['epoch']
     total_batch_count = saved_state['total_batch_count']
+  if params.lr_decay:
+    lr_scheduler = optim.lr_scheduler.StepLR(optimizer, params.lr_decay_step, params.lr_decay,
+                                             past_epochs - 1)
   criterion = nn.NLLLoss(ignore_index=vocab.PAD)
   best_avg_loss, best_epoch_id = float("inf"), None
 
   for epoch_count in range(1 + past_epochs, params.n_epochs + 1):
+    if params.lr_decay:
+      lr_scheduler.step()
     rl_ratio = params.rl_ratio if epoch_count >= params.rl_start_epoch else 0
     epoch_loss, epoch_metric = 0, 0
     epoch_avg_loss, valid_avg_loss, valid_avg_metric = None, None, None
