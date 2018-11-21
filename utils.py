@@ -9,10 +9,14 @@ import matplotlib.ticker as ticker
 from typing import NamedTuple, List, Callable, Dict, Tuple, Optional
 from collections import Counter
 from random import shuffle
+from functools import lru_cache
 import torch
 import gzip
 
+
 plt.switch_backend('agg')
+
+word_detector = re.compile('\w')
 
 
 class Vocab(object):
@@ -76,6 +80,16 @@ class Vocab(object):
 
   def __len__(self):
     return len(self.index2word)
+
+  @lru_cache(maxsize=None)
+  def is_word(self, token_id: int) -> bool:
+    """Return whether the token at `token_id` is a word; False for punctuations."""
+    if token_id < 4: return False
+    if token_id >= len(self): return True  # OOV is assumed to be words
+    token_str = self.index2word[token_id]
+    if not word_detector.search(token_str) or token_str == '<P>':
+      return False
+    return True
 
 
 class Example(NamedTuple):
@@ -303,8 +317,6 @@ def show_attention_map(src_words, pred_words, attention, pointer_ratio=None):
 
 
 non_word_char_in_word = re.compile(r"(?<=\w)\W(?=\w)")
-word_detector = re.compile('\w')
-
 not_for_output = {'<PAD>', '<SOS>', '<EOS>', '<UNK>'}
 
 def format_tokens(tokens: List[str], newline: str= '<P>', for_rouge: bool=False) -> str:

@@ -434,7 +434,7 @@ class Seq2Seq(nn.Module):
 
     # decode
     hypos = [Hypothesis([self.vocab.SOS], [], decoder_hidden, [], [], 1)]
-    complete_results = []
+    results, backup_results = [], []
     step = 0
     while hypos and step < 2 * max_out_len:  # prevent infinitely generating punctuations
       # make batch size equal to beam size (n_hypos <= beam size)
@@ -471,13 +471,7 @@ class Seq2Seq(nn.Module):
           new_tok = top_i[in_idx][out_idx].item()
           new_prob = top_v[in_idx][out_idx].item()
           if len_in_words:
-            if new_tok < 3:
-              non_word = True
-            elif new_tok < self.vocab_size:
-              token_str = self.vocab[new_tok]
-              non_word = word_detector.search(token_str) is None or token_str == '<P>'
-            else:  # OOV is assumed to be word-only, not punctuation
-              non_word = False
+            non_word = not self.vocab.is_word(new_tok)
           else:
             non_word = new_tok == self.vocab.EOS  # only SOS & EOS don't count
           new_hypo = hypos[in_idx].create_next(new_tok, new_prob,
@@ -489,18 +483,21 @@ class Seq2Seq(nn.Module):
       # process the new hypotheses
       new_hypos = sorted(new_hypos, key=lambda h: -h.avg_log_prob)
       hypos = []
-      new_complete_results = []
+      new_complete_results, new_incomplete_results = [], []
       for nh in new_hypos:
+        length = len(nh)
         if nh.tokens[-1] == self.vocab.EOS:  # a complete hypothesis
-          if len(new_complete_results) < beam_size and min_out_len <= len(nh) <= max_out_len:
+          if len(new_complete_results) < beam_size and min_out_len <= length <= max_out_len:
             new_complete_results.append(nh)
-        elif len(hypos) < beam_size and len(nh) <= max_out_len:  # an incomplete hypothesis
+        elif len(hypos) < beam_size and length < max_out_len:  # an incomplete hypothesis
           hypos.append(nh)
-        if len(hypos) >= beam_size and len(new_complete_results) >= beam_size:
-          break  # neither of the lists accept new items
-      complete_results.extend(new_complete_results)
+        elif length == max_out_len and len(new_incomplete_results) < beam_size:
+          new_incomplete_results.append(nh)
+      if new_complete_results:
+        results.extend(new_complete_results)
+      elif new_incomplete_results:
+        backup_results.extend(new_incomplete_results)
       step += 1
-    if complete_results:
-      return sorted(complete_results, key=lambda h: -h.avg_log_prob)[:beam_size]
-    else:
-      return hypos
+    if not results:  # if no sequence ends with EOS within desired length, fallback to sequences
+      results = backup_results  # that are "truncated" at the end to max_out_len
+    return sorted(results, key=lambda h: -h.avg_log_prob)[:beam_size]
