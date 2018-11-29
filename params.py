@@ -1,11 +1,11 @@
-from typing import Optional
+from typing import Optional, Union, List
 
 
 class Params:
   # Model architecture
   vocab_size: int = 30000
-  hidden_size: int = 100  # of the encoder; default decoder size is doubled if encoder is bidi
-  dec_hidden_size: Optional[int] = 100  # if set, a matrix will transform enc state into dec state
+  hidden_size: int = 150  # of the encoder; default decoder size is doubled if encoder is bidi
+  dec_hidden_size: Optional[int] = 200  # if set, a matrix will transform enc state into dec state
   embed_size: int = 100
   enc_bidi: bool = True
   enc_attn: bool = True  # decoder has attention over encoder states?
@@ -32,16 +32,16 @@ class Params:
   adagrad_accumulator: float = 0.1
   lr_decay_step: int = 5  # decay lr every how many epochs?
   lr_decay: Optional[float] = None  # decay lr by multiplying this factor
-  batch_size: int = 64
+  batch_size: int = 32
   n_batches: int = 1000  # how many batches per epoch
-  val_batch_size: int = 64
-  n_val_batches: int = 20  # how many validation batches per epoch
+  val_batch_size: int = 32
+  n_val_batches: int = 100  # how many validation batches per epoch
   n_epochs: int = 75
   pack_seq: bool = True  # use packed sequence to skip PAD inputs?
   forcing_ratio: float = 0.75  # initial percentage of using teacher forcing
   partial_forcing: bool = True  # in a seq, can some steps be teacher forced and some not?
-  forcing_decay_type: Optional[str] = 'linear'  # linear, exp, sigmoid, or None
-  forcing_decay: float = 0.0001
+  forcing_decay_type: Optional[str] = 'exp'  # linear, exp, sigmoid, or None
+  forcing_decay: float = 0.9999
   sample: bool = True  # are non-teacher forced inputs based on sampling or greedy selection?
   grad_norm: float = 1  # use gradient clipping if > 0; max gradient norm
   # note: enabling reinforcement learning can significantly slow down training
@@ -59,14 +59,44 @@ class Params:
   truncate_tgt: bool = True  # truncate to max_tgt_len? if false, drop example if too long
 
   # Saving model automatically during training
-  model_path_prefix: Optional[str] = 'checkpoints/cnndm'
+  model_path_prefix: Optional[str] = 'checkpoints/cnndm05'
   keep_every_epoch: bool = False  # save all epochs, or only the best and the latest one?
 
   # Testing
   beam_size: int = 4
-  min_out_len: int = 1
-  max_out_len: Optional[int] = None
-  out_len_in_words: bool = True
+  min_out_len: int = 60
+  max_out_len: Optional[int] = 100
+  out_len_in_words: bool = False
   test_data_path: str = 'data/cnndm.test.gz'
   test_sample_ratio: float = 1  # what portion of the test data is used? (1 for all data)
-  test_save_results: bool = True
+  test_save_results: bool = False
+
+  def update(self, cmd_args: List[str]):
+    """Update configuration by a list of command line arguments"""
+    arg_name = None
+    for arg_text in cmd_args:
+      if arg_name is None:
+        assert arg_text.startswith('--')  # the arg name has to start with "--"
+        arg_name = arg_text[2:]
+      else:
+        arg_curr_value = getattr(self, arg_name)
+        if arg_text.lower() == 'none':
+          arg_new_value = None
+        elif arg_text.lower() == 'true':
+          arg_new_value = True
+        elif arg_text.lower() == 'false':
+          arg_new_value = False
+        else:
+          arg_type = self.__annotations__[arg_name]
+          if type(arg_type) is not type:  # support only Optional[T], where T is a basic type
+            assert arg_type.__origin__ is Union
+            arg_types = [t for t in arg_type.__args__ if t is not type(None)]
+            assert len(arg_types) == 1
+            arg_type = arg_types[0]
+            assert type(arg_type) is type
+          arg_new_value = arg_type(arg_text)
+        setattr(self, arg_name, arg_new_value)
+        print("Hyper-parameter %s = %s (was %s)" % (arg_name, arg_new_value, arg_curr_value))
+        arg_name = None
+    if arg_name is not None:
+      print("Warning: Argument %s lacks a value and is ignored." % arg_name)

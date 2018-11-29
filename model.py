@@ -444,7 +444,7 @@ class Seq2Seq(nn.Module):
       # assemble existing hypotheses into a batch
       decoder_input = torch.tensor([h.tokens[-1] for h in hypos], device=DEVICE)
       decoder_hidden = torch.cat([h.dec_hidden for h in hypos], 1)
-      if self.dec_attn:  # dim 0 is decoding step, dim 1 is beam batch
+      if self.dec_attn and step > 0:  # dim 0 is decoding step, dim 1 is beam batch
         decoder_states = torch.cat([torch.cat(h.dec_states, 0) for h in hypos], 1)
       else:
         decoder_states = None

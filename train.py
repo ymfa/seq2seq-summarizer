@@ -194,7 +194,6 @@ def train(train_generator, vocab: Vocab, model: Seq2Seq, params: Params, valid_g
 
 if __name__ == "__main__":
   import argparse
-  import typing
 
   parser = argparse.ArgumentParser(description='Train the seq2seq abstractive summarizer.')
   parser.add_argument('--resume_from', type=str, metavar='R',
@@ -212,34 +211,7 @@ if __name__ == "__main__":
     train_status = None
 
   if unknown_args:  # allow command line args to override params.py
-    arg_name = None
-    for arg_text in unknown_args:
-      if arg_name is None:
-        assert arg_text.startswith('--')
-        arg_name = arg_text[2:]
-      else:
-        arg_curr_value = getattr(p, arg_name)
-        if arg_text.lower() == 'none':
-          arg_new_value = None
-        elif arg_text.lower() == 'true':
-          arg_new_value = True
-        elif arg_text.lower() == 'false':
-          arg_new_value = False
-        else:
-          arg_type = Params.__annotations__[arg_name]
-          if type(arg_type) is not type:  # support only Optional[T], where T is a basic type
-            assert arg_type.__origin__ is typing.Union
-            arg_types = [t for t in arg_type.__args__ if t is not type(None)]
-            assert len(arg_types) == 1
-            arg_type = arg_types[0]
-            assert type(arg_type) is type
-          arg_new_value = arg_type(arg_text)
-        setattr(p, arg_name, arg_new_value)
-        print("Hyper-parameter %s = %s %s (was %s %s)" %
-              (arg_name, type(arg_new_value), arg_new_value, type(arg_curr_value), arg_curr_value))
-        arg_name = None
-    if arg_name is not None:
-      print("Warning: Argument %s lacks a value and is ignored." % arg_name)
+    p.update(unknown_args)
 
   dataset = Dataset(p.data_path, max_src_len=p.max_src_len, max_tgt_len=p.max_tgt_len,
                     truncate_src=p.truncate_src, truncate_tgt=p.truncate_tgt)

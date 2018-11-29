@@ -176,15 +176,25 @@ def eval_bs(test_set: Dataset, vocab: Vocab, model: Seq2Seq, params: Params):
 
 
 if __name__ == "__main__":
+  import argparse
   import os.path
 
-  p = Params()
+  parser = argparse.ArgumentParser(description='Evaluate a summarization model.')
+  parser.add_argument('--model', type=str, metavar='M', help='path to the model to be evaluated')
+  args, unknown_args = parser.parse_known_args()
 
-  # load model
-  train_status = torch.load(p.model_path_prefix + ".train.pt")
-  filename = '%s.%02d.pt' % (p.model_path_prefix, train_status['epoch'])  # or 'best_epoch_so_far'
-  m = torch.load(filename)  # use map_location='cpu' if you are testing a CUDA model using CPU
+  p = Params()
+  if unknown_args:  # allow command line args to override params.py
+    p.update(unknown_args)
+
+  if args.model:  # evaluate a specific model
+    filename = args.model
+  else:  # evaluate the best model
+    train_status = torch.load(p.model_path_prefix + ".train.pt")
+    filename = '%s.%02d.pt' % (p.model_path_prefix, train_status['best_epoch_so_far'])
+
   print("Evaluating %s..." % filename)
+  m = torch.load(filename)  # use map_location='cpu' if you are testing a CUDA model using CPU
 
   m.encoder.gru.flatten_parameters()
   m.decoder.gru.flatten_parameters()
