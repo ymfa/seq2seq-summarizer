@@ -142,3 +142,7 @@ A function `show_attention_map` is provided to visualize the attention weights o
 * Bengio, S., Vinyals, O., Jaitly, N., & Shazeer, N. (2015). [Scheduled sampling for sequence prediction with recurrent neural networks.](http://papers.nips.cc/paper/5956-scheduled-sampling-for-sequence-prediction-with-recurrent-neural-networks) In _Advances in NIPS_.
 * Paulus, R., Xiong, C., & Socher, R. (2018). [A deep reinforced model for abstractive summarization.](https://arxiv.org/abs/1705.04304) In _ICLR_.
 * See, A., Liu, P. J., & Manning, C. D. (2017). [Get to the point: Summarization with pointer-generator networks.](http://www.aclweb.org/anthology/P17-1099) In _ACL_.
+
+## Disclaimer
+
+Due to change of circumstances, the original author of this repository can no longer maintain the repo. If you would like to maintain it, please contact @ymfa . Thank you!
